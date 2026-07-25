@@ -187,7 +187,7 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
     const yesterday = new Date(Date.now() - 86400000 + (8 * 3600000));
     const yStr = `${yesterday.getFullYear()}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getDate().toString().padStart(2, '0')}`;
     
-    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg "charge" "transaction" "made" -due) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (subject:"PayLah") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com "transaction") OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk subject:"Transaction Alerts" "Transaction" "Amount") OR (from:ibanking.alert@dbs.com subject:"Card Transaction Alert") OR (from:dbsalert@dbs.com "Transaction Alerts"))`;
+    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (from:dbs.com "PayNow") OR (from:dbs.com "Received") OR (subject:"PayLah") OR (subject:"PayNow") OR (subject:"Received") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com) OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk) OR (from:ibanking.alert@dbs.com) OR (from:dbsalert@dbs.com))`;
     const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=5`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
