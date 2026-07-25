@@ -850,11 +850,18 @@ Output format MUST be EXACTLY:
         }
 
         if (url.pathname === "/api/oauth/microsoft/callback") {
+          const errorParam = url.searchParams.get("error");
+          const errorDesc = url.searchParams.get("error_description");
+          if (errorParam) {
+            console.error(`[Microsoft OAuth Error] ${errorParam}: ${errorDesc}`);
+            return new Response(`Microsoft OAuth Error: ${errorParam}\nDetails: ${errorDesc}`, { status: 400 });
+          }
+
           const code = url.searchParams.get("code");
           const chatId = url.searchParams.get("state");
 
           if (!code || !chatId) {
-            return new Response("Missing code or state parameters", { status: 400 });
+            return new Response(`Missing code or state parameters. Received params: ${url.search}`, { status: 400 });
           }
 
           const webappUrl = process.env.WEBAPP_URL || `http://localhost:${port}`;
