@@ -36,8 +36,8 @@ export async function pollOutlook(bot?: Bot) {
     const lock = await client.getMailboxLock("INBOX");
 
     try {
-      // Search for unread messages
-      const messages = client.fetch({ unseen: true }, { source: true, envelope: true, uid: true });
+      // Search for unread messages (seen: false in ImapFlow)
+      const messages = client.fetch({ seen: false }, { source: true, envelope: true, uid: true });
 
       for await (const msg of messages) {
         const envelope = msg.envelope;

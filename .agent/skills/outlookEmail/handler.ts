@@ -4,7 +4,7 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function execute(args: { action: "list" | "search"; query?: string }) {
+export async function execute(args: { action?: "list" | "search"; query?: string }) {
   const email = process.env.OUTLOOK_EMAIL;
   const password = process.env.OUTLOOK_APP_PASSWORD;
 
@@ -31,12 +31,25 @@ export async function execute(args: { action: "list" | "search"; query?: string 
     const lock = await client.getMailboxLock("INBOX");
 
     try {
-      const criteria: any = {};
-      if (args.query) {
-        criteria.body = args.query;
+      const status = await client.status("INBOX", { messages: true });
+      const total = status.messages || 0;
+
+      if (total === 0) {
+        return {
+          success: true,
+          message: `📧 Your Outlook inbox (${email}) is empty.`,
+        };
       }
 
-      const messages = client.fetch(criteria, { envelope: true, source: true, uid: true });
+      let searchRange: any;
+      if (args.query && args.query.trim().length > 0) {
+        searchRange = { body: args.query.trim() };
+      } else {
+        const startSeq = Math.max(1, total - 9);
+        searchRange = `${startSeq}:${total}`;
+      }
+
+      const messages = client.fetch(searchRange, { envelope: true, source: true, uid: true });
       const results: any[] = [];
 
       for await (const msg of messages) {
@@ -44,7 +57,7 @@ export async function execute(args: { action: "list" | "search"; query?: string 
         const subject = envelope.subject || "No Subject";
         const from = envelope.from?.[0]?.address || "Unknown";
         const date = envelope.date ? envelope.date.toLocaleString() : "Unknown";
-        const snippet = stripHtml(msg.source.toString("utf-8")).substring(0, 200);
+        const snippet = stripHtml(msg.source.toString("utf-8")).substring(0, 180);
 
         results.push({
           uid: msg.uid,
@@ -53,18 +66,20 @@ export async function execute(args: { action: "list" | "search"; query?: string 
           date,
           snippet,
         });
-
-        if (results.length >= 5) break; // Return top 5 recent matches
       }
 
-      if (results.length === 0) {
+      // Reverse so newest appears first
+      results.reverse();
+      const topResults = results.slice(0, 5);
+
+      if (topResults.length === 0) {
         return {
           success: true,
-          message: `📧 No Outlook emails found matching your query: "${args.query || "recent"}"`,
+          message: `📧 No Outlook emails found matching query: "${args.query || "recent"}"`,
         };
       }
 
-      const formatted = results
+      const formatted = topResults
         .map(
           (m, idx) =>
             `${idx + 1}. <b>${m.subject}</b>\n   • From: <code>${m.from}</code>\n   • Date: ${m.date}\n   • Snippet: <i>${m.snippet}...</i>`
@@ -73,7 +88,7 @@ export async function execute(args: { action: "list" | "search"; query?: string 
 
       return {
         success: true,
-        count: results.length,
+        count: topResults.length,
         message: `📧 <b>Recent Outlook Emails (${email}):</b>\n\n${formatted}`,
       };
     } finally {
@@ -82,7 +97,7 @@ export async function execute(args: { action: "list" | "search"; query?: string 
   } catch (err: any) {
     return {
       success: false,
-      message: `❌ Error connecting to Outlook IMAP: ${err.message}`,
+      message: `❌ Error reading Outlook IMAP (${email}): ${err.message}`,
     };
   } finally {
     await client.logout().catch(() => {});
