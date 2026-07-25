@@ -81,9 +81,9 @@ function getEmailParts(payload: any): { plain: string; html: string } {
   if (!payload) return { plain, html };
 
   if (payload.mimeType === 'text/plain' && payload.body?.data) {
-    plain += Buffer.from(payload.body.data, 'base64').toString('utf-8') + '\n';
+    plain += Buffer.from(payload.body.data, 'base64url').toString('utf-8') + '\n';
   } else if (payload.mimeType === 'text/html' && payload.body?.data) {
-    html += Buffer.from(payload.body.data, 'base64').toString('utf-8') + '\n';
+    html += Buffer.from(payload.body.data, 'base64url').toString('utf-8') + '\n';
   }
 
   if (payload.parts && Array.isArray(payload.parts)) {
@@ -131,7 +131,9 @@ function stripHtmlTags(html: string): string {
   return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
 }
 
-async function extractExpense(content: string, subject: string, fromHeader: string): Promise<any> {
+import { LlmService } from "./core/LlmService";
+
+export async function extractExpense(content: string, subject: string, fromHeader: string): Promise<any> {
   const prompt = `
 You are an assistant that analyzes email content to determine if it is a financial receipt/transaction alert, and extracts details.
 First, determine if the email is a financial receipt, invoice, order confirmation, bank/wallet transaction alert, payment confirmation, or utility bill.
@@ -144,10 +146,10 @@ Email Metadata:
 Extract the following details from this email:
 - is_receipt (boolean: true if it is a financial receipt or transaction alert, false otherwise)
 - amount (number only, or null if not found or is_receipt is false)
-- description: Infer the clean, recognizable name of the merchant, shop, service, payee, or transfer recipient (e.g. "Toast Box", "Kopitiam", "John Tan"). For DBS PayLah! or PayNow payments/transfers, extract the merchant or person's name receiving the money. DO NOT output "Unknown" or "null" as a literal string. If the payee/merchant cannot be identified at all, output null.
-- category: Categorize the expense (e.g. Food, Shopping, Transfer, Transport, Groceries, Health, Subscription, Travel, Utilities, etc). If completely unsure, output null.
+- description: Infer the clean, recognizable name of the merchant, shop, service, payee, or transfer recipient (e.g. "GOJEK", "Toast Box", "Kopitiam", "John Tan"). For DBS PayLah! or PayNow payments/transfers, extract the merchant or person's name listed under "To:" or "Payee:" or in the body text (e.g., if the email states "To: GOJEK", output "GOJEK"). DO NOT output "Unknown" or "null" as a literal string. If the payee/merchant cannot be identified at all, output null.
+- category: Categorize the expense (e.g. Food, Shopping, Transfer, Transport, Groceries, Health, Subscription, Travel, Utilities, etc). If the transaction is to a ride-hailing service like GOJEK or Grab, categorize as Transport. If completely unsure, output null.
 - payment_mode: Map the credit card or payment wallet by applying these rules strictly:
-  * If it is a DBS PayLah! wallet alert, or from paylah.alert@dbs.com, or the subject/body mentions PayLah / DBS PayLah!, output: "PayLah!"
+  * If it is a DBS PayLah! wallet alert, or from PayLah! Alerts, or from paylah.alert@dbs.com, or the subject/body mentions PayLah / DBS PayLah!, output: "PayLah!"
   * If it is a UOB email and the transaction references card ending in "6405", output: "UOB Krisflyer"
   * If it is a UOB email and the transaction references card ending in "5184", output: "UOB Visa Signature"
   * If it is a DBS/POSB transaction alert (and NOT a DBS PayLah! wallet alert), output: "DBS Womens"
@@ -162,34 +164,15 @@ Email body:
 ${content}
 `;
 
-  const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "deepseek-chat",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.1
-    })
-  });
-
-  if (!response.ok) {
-    console.error("[EmailPoller] LLM API Error");
-    return null;
-  }
-
-  const data = await response.json();
-  const text = data.choices[0].message.content;
   try {
+    const llm = new LlmService();
+    const text = await llm.generateResponse([{ role: "user", content: prompt }]);
     const jsonMatch = text.match(/```(?:json)?\n?([\s\S]*?)\n?```/) || text.match(/{[\s\S]*?}/);
     const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text;
     const parsed = JSON.parse(jsonStr);
-    
     return parsed;
   } catch (err) {
-    console.error("[EmailPoller] Failed to parse LLM response:", err);
+    console.error("[EmailPoller] Failed to extract expense from LLM response:", err);
     return null;
   }
 }
@@ -204,7 +187,7 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
     const yesterday = new Date(Date.now() - 86400000 + (8 * 3600000));
     const yStr = `${yesterday.getFullYear()}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getDate().toString().padStart(2, '0')}`;
     
-    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg "charge" "transaction" "made" -due) OR (from:paylah.alert@dbs.com) OR (from:ibanking.alert@dbs.com "PayLah") OR (from:dbsalert@dbs.com "PayLah") OR (subject:"PayLah") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com "transaction") OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk subject:"Transaction Alerts" "Transaction" "Amount") OR (from:ibanking.alert@dbs.com subject:"Card Transaction Alert"))`;
+    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg "charge" "transaction" "made" -due) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (subject:"PayLah") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com "transaction") OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk subject:"Transaction Alerts" "Transaction" "Amount") OR (from:ibanking.alert@dbs.com subject:"Card Transaction Alert") OR (from:dbsalert@dbs.com "Transaction Alerts"))`;
     const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=5`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
