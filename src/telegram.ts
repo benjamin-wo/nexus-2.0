@@ -95,6 +95,8 @@ async function main() {
         let text = "";
         if (success) {
           text = `✅ **Task Completed!**\nTask ID: \`${taskId}\`\nDescription: ${description}\n\n*Output:*\n${resultOrError}`;
+        } else if (String(resultOrError).includes("cancelled")) {
+          text = `🛑 **Task Cancelled**\nTask ID: \`${taskId}\`\nDescription: ${description}`;
         } else {
           text = `❌ **Task Failed!**\nTask ID: \`${taskId}\`\nDescription: ${description}\n\n*Error:*\n${resultOrError}`;
         }
@@ -128,23 +130,31 @@ async function main() {
     return `http://localhost:3000?chatId=${chatId}`;
   }
 
-  // 4a. Handle /cancel <taskId> to stop a running tracking session and Admin Commands
+  // 4a. Handle /cancel and /stop commands to stop running tracking sessions
   bot.on("message", async (ctx, next) => {
     const text = (ctx.message.text || "").trim();
     const threadId = ctx.message.message_thread_id;
     const chatId = String(ctx.chat.id);
 
-    if (text.startsWith("/cancel ")) {
-      const taskId = text.split(" ")[1]?.trim();
-      if (taskId) {
+    if (text === "/cancel" || text.startsWith("/cancel ") || text === "/stop" || text.startsWith("/stop ")) {
+      const parts = text.split(" ");
+      const taskId = parts.length > 1 ? parts[1].trim() : null;
+      if (taskId && taskId.startsWith("task_")) {
         const cancelled = await TaskRegistry.getInstance().cancelTask(taskId);
         if (cancelled) {
           await ctx.reply(`✅ Tracking session <code>${taskId}</code> has been stopped.`, { parse_mode: "HTML", message_thread_id: threadId });
         } else {
           await ctx.reply(`⚠️ No active task found with ID <code>${taskId}</code>.`, { parse_mode: "HTML", message_thread_id: threadId });
         }
-        return; 
+      } else {
+        const cancelledIds = await TaskRegistry.getInstance().cancelTasksForChat(chatId);
+        if (cancelledIds.length > 0) {
+          await ctx.reply(`🛑 Stopped tracking! Cancelled task(s): ${cancelledIds.map((id) => `<code>${id}</code>`).join(", ")}`, { parse_mode: "HTML", message_thread_id: threadId });
+        } else {
+          await ctx.reply(`ℹ️ No active tracking or background tasks running.`, { message_thread_id: threadId });
+        }
       }
+      return; 
     }
 
     if (text.startsWith("/assign ")) {

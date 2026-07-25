@@ -37,7 +37,7 @@ export class Orchestrator {
           .join("\n");
       }
 
-      const cancelMatch = userText.match(/^(?:cancel|stop)\s+(task_[a-z0-9]+)/i);
+      const cancelMatch = userText.match(/^(?:\/cancel|\/stop|cancel|stop)\s+(task_[a-z0-9]+)/i);
       if (cancelMatch) {
         const taskId = cancelMatch[1];
         const success = await TaskRegistry.getInstance().cancelTask(taskId);
@@ -45,6 +45,16 @@ export class Orchestrator {
           return `🛑 Task \`${taskId}\` has been cancelled successfully.`;
         }
         return `⚠️ Task \`${taskId}\` was not found or is not running.`;
+      }
+
+      const generalStopMatch = userText.match(/^(?:\/cancel|\/stop|cancel|stop)(?:\s+(?:tracking|bus\s+tracking|bus|polling|it|the\s+bus|all))?$/i);
+      if (generalStopMatch) {
+        const cancelledIds = await TaskRegistry.getInstance().cancelTasksForChat(chatId);
+        if (cancelledIds.length > 0) {
+          return `🛑 Successfully stopped tracking! Cancelled task(s): ${cancelledIds.map((id) => `\`${id}\``).join(", ")}.`;
+        } else {
+          return `ℹ️ No active tracking or background tasks found to stop.`;
+        }
       }
 
       // 2. Fetch Chat History and personality/user context

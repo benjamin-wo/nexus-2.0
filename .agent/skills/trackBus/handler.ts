@@ -1,12 +1,20 @@
 import { TaskRegistry } from "../../../src/core/TaskRegistry";
+import { getBusStopCache } from "../ltaDataMall/handler";
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      return reject(new Error("Task cancelled"));
+    }
     const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => {
-      clearTimeout(timer);
-      reject(new Error("Task cancelled"));
-    }, { once: true });
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("Task cancelled"));
+      },
+      { once: true }
+    );
   });
 }
 
@@ -82,27 +90,34 @@ export async function execute(
     stopName,
   } = args;
 
-  // Resolve stop name if not provided
+  let resolvedCode = busStopId.trim();
   let stopLabel = stopName || busStopId;
-  if (!stopName) {
-    try {
-      const res = await fetch(
-        `https://datamall2.mytransport.sg/ltaodataservice/BusStops?$skip=0`,
-        { headers: { AccountKey: ltaKey, accept: "application/json" } }
-      );
-      // Quick search in first batch (500 stops) — good enough for common stops
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        const match = (data.value || []).find((s: any) => s.BusStopCode === busStopId);
-        if (match) stopLabel = `${match.Description}, ${match.RoadName}`;
+
+  try {
+    const cache = await getBusStopCache({ AccountKey: ltaKey, accept: "application/json" });
+    if (!/^\d{5}$/.test(resolvedCode)) {
+      const q = resolvedCode.toLowerCase();
+      for (const [code, stop] of cache.entries()) {
+        const descLower = stop.description.toLowerCase();
+        const roadLower = stop.roadName.toLowerCase();
+        if (descLower.includes(q) || roadLower.includes(q) || (q.includes("mbs") && descLower.includes("bayfront"))) {
+          resolvedCode = code;
+          stopLabel = `${stop.description}, ${stop.roadName}`;
+          break;
+        }
       }
-    } catch (_) { /* fallback to code */ }
-  }
+    } else if (!stopName) {
+      const stop = cache.get(resolvedCode);
+      if (stop) {
+        stopLabel = `${stop.description}, ${stop.roadName}`;
+      }
+    }
+  } catch (_) { /* fallback to busStopId string */ }
 
   const intervalMs = Math.max(15, intervalSeconds) * 1000;
   const maxMs = Math.max(1, maxMinutes) * 60 * 1000;
   const serviceLabel = serviceNo ? `Bus ${serviceNo} at` : "all buses at";
-  const description = `Tracking ${serviceLabel} stop ${busStopId} every ${intervalSeconds}s for up to ${maxMinutes}m`;
+  const description = `Tracking ${serviceLabel} stop ${resolvedCode} every ${intervalSeconds}s for up to ${maxMinutes}m`;
 
   const taskRegistry = TaskRegistry.getInstance();
 
@@ -113,29 +128,30 @@ export async function execute(
 
     while (!signal.aborted && Date.now() - startTime < maxMs) {
       pollCount++;
-      const services = await fetchArrivals(busStopId, ltaKey);
-      const message = formatUpdate(busStopId, stopLabel, services, serviceNo);
+      const services = await fetchArrivals(resolvedCode, ltaKey);
+      if (signal.aborted) break;
+
+      const message = formatUpdate(resolvedCode, stopLabel, services, serviceNo);
 
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       const remaining = Math.ceil((maxMs - (Date.now() - startTime)) / 60000);
       const footer = `\n_Poll #${pollCount} · ${elapsed}s elapsed · stops in ~${remaining}m_`;
 
+      if (signal.aborted) break;
       await taskRegistry.sendUpdate(chatId, message + footer);
 
-      // Auto-stop if the tracked bus is showing "Arr" (arrived)
       if (serviceNo) {
         const tracked = services.find((s) => s.serviceNo === serviceNo);
         if (tracked?.next === "Arr") {
           arrivedDetected = true;
           await taskRegistry.sendUpdate(
             chatId,
-            `✅ Bus **${serviceNo}** has arrived at stop ${busStopId}! Tracking stopped.`
+            `✅ Bus **${serviceNo}** has arrived at stop ${resolvedCode}! Tracking stopped.`
           );
           break;
         }
       }
 
-      // Adaptive interval — tighten polling when bus is close
       let nextSleep = intervalMs;
       if (serviceNo) {
         const tracked = services.find((s) => s.serviceNo === serviceNo);
@@ -148,17 +164,18 @@ export async function execute(
         }
       }
 
+      if (signal.aborted) break;
       await sleep(nextSleep, signal);
     }
 
     return arrivedDetected
-      ? `Bus ${serviceNo} arrived at stop ${busStopId} after ${pollCount} polls.`
+      ? `Bus ${serviceNo} arrived at stop ${resolvedCode} after ${pollCount} polls.`
       : `Tracking session ended after ${pollCount} polls (${maxMinutes}m max reached).`;
   });
 
   return {
     success: true,
     taskId,
-    message: `🚌 Now tracking **stop ${busStopId}** (${stopLabel})${serviceNo ? ` for Bus **${serviceNo}**` : ""}.\nPolling every **${intervalSeconds}s** for up to **${maxMinutes} minutes**.\n\nSend \`/cancel ${taskId}\` to stop tracking early.`,
+    message: `🚌 Now tracking **stop ${resolvedCode}** (${stopLabel})${serviceNo ? ` for Bus **${serviceNo}**` : ""}.\nPolling every **${intervalSeconds}s** for up to **${maxMinutes} minutes**.\n\nSend \`/cancel\` or \`stop tracking\` to stop tracking anytime.`,
   };
 }

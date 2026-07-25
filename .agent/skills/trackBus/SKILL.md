@@ -6,7 +6,7 @@ parameters:
   properties:
     busStopId:
       type: string
-      description: "The 5-digit LTA bus stop code to track (e.g. '03519')."
+      description: "The 5-digit LTA bus stop code (e.g. '03519') OR a place/landmark name to track (e.g. 'Marina Bay Sands', 'Raffles Hotel', 'Dhoby Ghaut')."
     serviceNo:
       type: string
       description: "Optional. Filter to track a specific bus service number only (e.g. '65', '131'). If omitted, tracks all services at the stop."

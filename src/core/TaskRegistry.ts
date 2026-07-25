@@ -147,4 +147,20 @@ export class TaskRegistry {
       await storage.close();
     }
   }
+
+  async cancelTasksForChat(chatId: string): Promise<string[]> {
+    const storage = new StorageService();
+    await storage.initialize();
+    try {
+      const activeTasks = await storage.getActiveTasks(chatId);
+      const cancelledIds: string[] = [];
+      for (const t of activeTasks) {
+        const ok = await this.cancelTask(t.taskId);
+        if (ok) cancelledIds.push(t.taskId);
+      }
+      return cancelledIds;
+    } finally {
+      await storage.close();
+    }
+  }
 }

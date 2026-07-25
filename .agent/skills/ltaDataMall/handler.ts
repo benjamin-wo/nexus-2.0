@@ -1,15 +1,16 @@
 // In-memory cache for bus stop lookup (populated once per process lifetime)
 let busStopCache: Map<string, { description: string; roadName: string; lat: number; lng: number }> | null = null;
 
-async function getBusStopCache(headers: Record<string, string>) {
+export async function getBusStopCache(headers?: Record<string, string>) {
   if (busStopCache) return busStopCache;
+  const key = headers?.AccountKey || process.env.LTA_ACCOUNT_KEY || "";
+  const reqHeaders = { AccountKey: key, accept: "application/json" };
 
-  // LTA paginates BusStops in increments of 500 via $skip
   busStopCache = new Map();
   let skip = 0;
   while (true) {
     const url = `https://datamall2.mytransport.sg/ltaodataservice/BusStops?$skip=${skip}`;
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers: reqHeaders });
     if (!res.ok) break;
     const data = (await res.json()) as any;
     const batch: any[] = data.value || [];
@@ -28,10 +29,36 @@ async function getBusStopCache(headers: Record<string, string>) {
   return busStopCache;
 }
 
+function getDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function expandSearchTerms(query: string): string[] {
+  const q = query.toLowerCase().trim();
+  const terms = [q];
+  if (q.includes("marina bay sands")) terms.push("mbs", "bayfront");
+  if (q.includes("mbs")) terms.push("marina bay sands", "bayfront");
+  if (q.includes("orchard mrt")) terms.push("orchard stn");
+  if (q.includes("dhoby ghaut")) terms.push("dhoby ghaut stn");
+  if (q.includes("mrt")) terms.push("stn");
+  if (q.includes("interchange")) terms.push("int");
+  if (q.includes("opposite")) terms.push("opp");
+  return terms;
+}
+
 export async function execute(args: {
   action: "getBusArrivals" | "getCarparkAvailability" | "getTrafficIncidents" | "getBusStopInfo";
   busStopId?: string;
   locationQuery?: string;
+  latitude?: number;
+  longitude?: number;
 }) {
   const accountKey = process.env.LTA_ACCOUNT_KEY;
   if (!accountKey) {
@@ -40,7 +67,7 @@ export async function execute(args: {
     );
   }
 
-  const { action, busStopId, locationQuery } = args;
+  const { action, busStopId, locationQuery, latitude, longitude } = args;
   const headers = {
     AccountKey: accountKey,
     accept: "application/json",
@@ -48,29 +75,44 @@ export async function execute(args: {
 
   switch (action) {
     case "getBusStopInfo": {
-      // Resolve a bus stop code → name, or a name/road query → list of matching stops
       const cache = await getBusStopCache(headers);
 
       if (busStopId && /^\d{5}$/.test(busStopId.trim())) {
-        // Exact 5-digit code lookup
         const stop = cache.get(busStopId.trim());
         if (!stop) return { success: false, message: `No bus stop found with code '${busStopId}'.` };
         return { success: true, busStopCode: busStopId, ...stop };
       }
 
-      // Text search by description or road name
-      const query = (busStopId || locationQuery || "").toLowerCase();
-      if (!query) throw new Error("Provide a busStopId code or a locationQuery string to search.");
+      // Proximity search if latitude & longitude provided
+      if (latitude !== undefined && longitude !== undefined) {
+        const nearby: any[] = [];
+        for (const [code, stop] of cache.entries()) {
+          const distKm = getDistanceKm(latitude, longitude, stop.lat, stop.lng);
+          if (distKm <= 1.0) { // within 1km
+            nearby.push({ busStopCode: code, ...stop, distanceMeters: Math.round(distKm * 1000) });
+          }
+        }
+        nearby.sort((a, b) => a.distanceMeters - b.distanceMeters);
+        return { success: true, latitude, longitude, matches: nearby.slice(0, 5) };
+      }
 
+      // Text search by description or road name with alias expansion
+      const rawQuery = (busStopId || locationQuery || "").trim();
+      if (!rawQuery) throw new Error("Provide a busStopId code, locationQuery string, or latitude/longitude coordinates.");
+
+      const searchTerms = expandSearchTerms(rawQuery);
       const matches: any[] = [];
       for (const [code, stop] of cache.entries()) {
-        if (stop.description.toLowerCase().includes(query) || stop.roadName.toLowerCase().includes(query)) {
+        const descLower = stop.description.toLowerCase();
+        const roadLower = stop.roadName.toLowerCase();
+        const hit = searchTerms.some((term) => descLower.includes(term) || roadLower.includes(term));
+        if (hit) {
           matches.push({ busStopCode: code, ...stop });
           if (matches.length >= 10) break;
         }
       }
 
-      return { success: true, query, matches };
+      return { success: true, query: rawQuery, matches };
     }
 
     case "getBusArrivals": {
@@ -78,17 +120,18 @@ export async function execute(args: {
         throw new Error("Parameter 'busStopId' is required for action 'getBusArrivals'.");
       }
 
-      // Resolve a text name to a stop code if needed
       let resolvedCode = busStopId.trim();
       let stopName: string | null = null;
       let roadName: string | null = null;
 
+      const cache = await getBusStopCache(headers);
+
       if (!/^\d{5}$/.test(resolvedCode)) {
-        // User gave a name — search the cache for the best match
-        const cache = await getBusStopCache(headers);
-        const query = resolvedCode.toLowerCase();
+        const searchTerms = expandSearchTerms(resolvedCode);
         for (const [code, stop] of cache.entries()) {
-          if (stop.description.toLowerCase().includes(query) || stop.roadName.toLowerCase().includes(query)) {
+          const descLower = stop.description.toLowerCase();
+          const roadLower = stop.roadName.toLowerCase();
+          if (searchTerms.some((term) => descLower.includes(term) || roadLower.includes(term))) {
             resolvedCode = code;
             stopName = stop.description;
             roadName = stop.roadName;
@@ -96,11 +139,9 @@ export async function execute(args: {
           }
         }
         if (!/^\d{5}$/.test(resolvedCode)) {
-          return { success: false, message: `Could not find a bus stop matching '${busStopId}'. Try using a 5-digit stop code.` };
+          return { success: false, message: `Could not find a bus stop matching '${busStopId}'. Try using a 5-digit stop code or landmark name.` };
         }
       } else {
-        // Enrich a numeric code with a human-readable name
-        const cache = await getBusStopCache(headers);
         const stop = cache.get(resolvedCode);
         if (stop) {
           stopName = stop.description;
@@ -125,7 +166,7 @@ export async function execute(args: {
           serviceNo: s.ServiceNo,
           operator: s.Operator,
           nextBus: getMins(s.NextBus?.EstimatedArrival),
-          nextBusLoad: s.NextBus?.Load || "", // SEA, SDA, LSD
+          nextBusLoad: s.NextBus?.Load || "",
           nextBus2: getMins(s.NextBus2?.EstimatedArrival),
           nextBus3: getMins(s.NextBus3?.EstimatedArrival),
         };
