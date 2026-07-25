@@ -413,6 +413,17 @@ Output format MUST be EXACTLY:
          
          const storage = new StorageService();
          await storage.initialize();
+         try {
+             await storage.logEvent({
+                 category: `WORKER_CRASH_${workerName.toUpperCase()}`,
+                 message: `WorkerCrash in ${workerName}: ${lastInput}`,
+                 details: stackTrace,
+                 isError: true,
+             });
+         } catch (logErr) {
+             console.error("[Telegram] Failed to log WorkerCrash to DB:", logErr);
+         }
+         
          const pmThreadId = await storage.getProfileValue("PM_THREAD_ID");
          await storage.close();
          
