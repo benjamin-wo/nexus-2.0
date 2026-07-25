@@ -1,6 +1,6 @@
 ---
 name: outlookEmail
-description: Accesses the user's Outlook or Hotmail inbox via IMAP to list, search, or read recent emails.
+description: Accesses the user's Outlook or Hotmail inbox via Microsoft Graph REST API to list, search, or read recent emails.
 parameters:
   type: object
   properties:
@@ -13,6 +13,8 @@ parameters:
       description: "Optional keyword search query (e.g. 'receipt', 'bank', 'PayNow', 'order')."
   required: [action]
 ---
-Use this skill whenever the user asks to check, read, or search their Outlook or Hotmail emails.
+Use this skill whenever the user asks to check, read, search, or inspect their Outlook, Hotmail, or Microsoft emails.
 
-IMPORTANT: Do NOT ask the user for Microsoft Graph tokens, Graph Explorer access tokens, or OAuth links. This skill automatically connects to Outlook/Hotmail IMAP using OUTLOOK_EMAIL and OUTLOOK_APP_PASSWORD configured on the server. Always call this tool directly when asked about Outlook or Hotmail.
+IMPORTANT:
+- This tool automatically connects to Microsoft Graph API using the user's OAuth credentials.
+- Do NOT say you lack Outlook access or demand Graph tokens. Always execute `outlookEmail` directly!
