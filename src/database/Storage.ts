@@ -136,6 +136,8 @@ export interface IStorage {
   setThreadAssignment(threadId: number, workerName: string): Promise<void>;
   getProfileValue(key: string): Promise<any>;
   setProfileValue(key: string, value: any): Promise<void>;
+  getUserProfile(chatId: string): Promise<string | null>;
+  setUserProfile(chatId: string, profileData: string): Promise<void>;
   logEpisodicMemory(sessionId: string, interactionType: string, content: string): Promise<void>;
   checkAndSeedSkills(): Promise<void>;
   close(): Promise<void>;
@@ -290,6 +292,12 @@ export class StorageService implements IStorage {
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
 
+          CREATE TABLE IF NOT EXISTS user_chat_profiles (
+              chat_id TEXT PRIMARY KEY,
+              profile_data TEXT NOT NULL,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
           CREATE TABLE IF NOT EXISTS episodic_memory (
               id SERIAL PRIMARY KEY,
               session_id VARCHAR(255), 
@@ -441,6 +449,14 @@ export class StorageService implements IStorage {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key VARCHAR(255) UNIQUE NOT NULL,
             value TEXT NOT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS user_chat_profiles (
+            chat_id TEXT PRIMARY KEY,
+            profile_data TEXT NOT NULL,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
@@ -1344,6 +1360,40 @@ export class StorageService implements IStorage {
       this.sqliteDb.prepare(
         "INSERT INTO episodic_memory (session_id, interaction_type, content) VALUES (?, ?, ?)"
       ).run(sessionId, interactionType, content);
+    }
+  }
+
+  async getUserProfile(chatId: string): Promise<string | null> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT profile_data FROM user_chat_profiles WHERE chat_id = $1",
+        [chatId]
+      );
+      if (res.rows.length === 0) return null;
+      return res.rows[0].profile_data;
+    } else if (this.sqliteDb) {
+      const row = this.sqliteDb
+        .prepare("SELECT profile_data FROM user_chat_profiles WHERE chat_id = ?")
+        .get(chatId) as any;
+      if (!row) return null;
+      return row.profile_data;
+    }
+    return null;
+  }
+
+  async setUserProfile(chatId: string, profileData: string): Promise<void> {
+    const nowStr = new Date().toISOString();
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        "INSERT INTO user_chat_profiles (chat_id, profile_data, updated_at) VALUES ($1, $2, $3) ON CONFLICT (chat_id) DO UPDATE SET profile_data = $2, updated_at = $3",
+        [chatId, profileData, nowStr]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb
+        .prepare(
+          "INSERT INTO user_chat_profiles (chat_id, profile_data, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET profile_data = excluded.profile_data, updated_at = excluded.updated_at"
+        )
+        .run(chatId, profileData, nowStr);
     }
   }
 

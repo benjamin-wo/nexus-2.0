@@ -94,7 +94,10 @@ export class Orchestrator {
       if (existsSync(soulPath)) {
         soulPrompt = `\n\n# Your Personality & Tone (Soul)\n${await readFile(soulPath, "utf-8")}`;
       }
-      if (existsSync(userPath)) {
+      const dbProfile = await storage.getUserProfile(chatId);
+      if (dbProfile) {
+        userMemory = `\n\n# User Memory & Preferences (PostgreSQL)\n${dbProfile}`;
+      } else if (existsSync(userPath)) {
         userMemory = `\n\n# User Memory & Preferences\n${await readFile(userPath, "utf-8")}`;
       }
       if (existsSync(rulesPath)) {
