@@ -74,6 +74,17 @@ export interface ResearchNote {
   createdAt?: Date;
 }
 
+export interface Reimbursement {
+  id?: number;
+  chatId: string;
+  debtorName: string;
+  amount: number;
+  description: string;
+  status: "pending" | "settled";
+  settledAt?: Date | string;
+  createdAt?: Date | string;
+}
+
 export interface RuntimeSkill {
   id?: number;
   name: string;
@@ -92,6 +103,8 @@ export interface IStorage {
   getPendingReminders(): Promise<Reminder[]>;
   markReminderSent(id: number): Promise<void>;
   updateReminderDueAt(id: number, nextDueAt: Date): Promise<void>;
+  getUserReminders(chatId: string): Promise<Reminder[]>;
+  deleteReminder(id: number): Promise<boolean>;
   logEvent(log: LogEntry): Promise<void>;
   getRecentLogs(limit?: number): Promise<any[]>;
   getLogsPastHours(hours: number): Promise<any[]>;
@@ -106,6 +119,10 @@ export interface IStorage {
   createPendingExpense(expense: PendingExpense): Promise<number>;
   getPendingExpense(id: number): Promise<PendingExpense | null>;
   deletePendingExpense(id: number): Promise<void>;
+  createReimbursement(reimbursement: Reimbursement): Promise<number>;
+  getPendingReimbursements(chatId: string): Promise<Reimbursement[]>;
+  settleReimbursement(id: number): Promise<boolean>;
+  matchAndSettleReimbursement(chatId: string, payerName: string, amount: number): Promise<Reimbursement | null>;
   createResearchNote(note: ResearchNote): Promise<number>;
   getResearchNotes(chatId: string): Promise<ResearchNote[]>;
   deleteResearchNote(id: number, chatId: string): Promise<void>;
@@ -222,6 +239,17 @@ export class StorageService implements IStorage {
             description TEXT,
             payment_mode TEXT,
             raw_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS reimbursements (
+            id SERIAL PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            debtor_name TEXT NOT NULL,
+            amount DOUBLE PRECISION NOT NULL,
+            description TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            settled_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
 
@@ -353,6 +381,19 @@ export class StorageService implements IStorage {
           description TEXT,
           payment_mode TEXT,
           raw_data TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS reimbursements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id TEXT NOT NULL,
+          debtor_name TEXT NOT NULL,
+          amount REAL NOT NULL,
+          description TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          settled_at DATETIME,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
@@ -921,6 +962,99 @@ export class StorageService implements IStorage {
         .prepare("DELETE FROM pending_expenses WHERE id = ?")
         .run(id);
     }
+  }
+
+  async createReimbursement(r: Reimbursement): Promise<number> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "INSERT INTO reimbursements (chat_id, debtor_name, amount, description, status) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        [r.chatId, r.debtorName, r.amount, r.description, r.status || "pending"]
+      );
+      return res.rows[0].id;
+    } else if (this.sqliteDb) {
+      const res = this.sqliteDb
+        .prepare(
+          "INSERT INTO reimbursements (chat_id, debtor_name, amount, description, status) VALUES (?, ?, ?, ?, ?) RETURNING id"
+        )
+        .get(r.chatId, r.debtorName, r.amount, r.description, r.status || "pending") as any;
+      return res.id;
+    }
+    return 0;
+  }
+
+  async getPendingReimbursements(chatId: string): Promise<Reimbursement[]> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT id, chat_id, debtor_name, amount, description, status, settled_at, created_at FROM reimbursements WHERE chat_id = $1 AND status = 'pending' ORDER BY id DESC",
+        [chatId]
+      );
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        chatId: row.chat_id,
+        debtorName: row.debtor_name,
+        amount: Number(row.amount),
+        description: row.description,
+        status: row.status,
+        settledAt: row.settled_at,
+        createdAt: row.created_at,
+      }));
+    } else if (this.sqliteDb) {
+      const rows = this.sqliteDb
+        .prepare(
+          "SELECT id, chat_id, debtor_name, amount, description, status, settled_at, created_at FROM reimbursements WHERE chat_id = ? AND status = 'pending' ORDER BY id DESC"
+        )
+        .all(chatId) as any[];
+      return rows.map((row) => ({
+        id: row.id,
+        chatId: row.chat_id,
+        debtorName: row.debtor_name,
+        amount: Number(row.amount),
+        description: row.description,
+        status: row.status,
+        settledAt: row.settled_at,
+        createdAt: row.created_at,
+      }));
+    }
+    return [];
+  }
+
+  async settleReimbursement(id: number): Promise<boolean> {
+    const nowStr = new Date().toISOString();
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "UPDATE reimbursements SET status = 'settled', settled_at = $1 WHERE id = $2",
+        [nowStr, id]
+      );
+      return (res.rowCount || 0) > 0;
+    } else if (this.sqliteDb) {
+      const info = this.sqliteDb
+        .prepare("UPDATE reimbursements SET status = 'settled', settled_at = ? WHERE id = ?")
+        .run(nowStr, id);
+      return info.changes > 0;
+    }
+    return false;
+  }
+
+  async matchAndSettleReimbursement(chatId: string, payerName: string, amount: number): Promise<Reimbursement | null> {
+    const pending = await this.getPendingReimbursements(chatId);
+    const pNameLower = payerName.toLowerCase();
+    
+    // Find best match by debtor name and amount (allowing ±0.50 margin or exact match)
+    const match = pending.find((r) => {
+      const dNameLower = r.debtorName.toLowerCase();
+      const isNameMatch = pNameLower.includes(dNameLower) || dNameLower.includes(pNameLower);
+      const isAmountMatch = Math.abs(r.amount - amount) < 0.50;
+      return isNameMatch && isAmountMatch;
+    }) || pending.find((r) => {
+      const dNameLower = r.debtorName.toLowerCase();
+      return pNameLower.includes(dNameLower) || dNameLower.includes(pNameLower);
+    });
+
+    if (match && match.id) {
+      await this.settleReimbursement(match.id);
+      return match;
+    }
+    return null;
   }
 
   async createResearchNote(note: ResearchNote): Promise<number> {

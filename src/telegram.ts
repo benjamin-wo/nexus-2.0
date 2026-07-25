@@ -184,6 +184,33 @@ async function main() {
       return;
     }
 
+    if (text === "/owed" || text === "/reimbursements") {
+      const storage = new StorageService();
+      await storage.initialize();
+      const pending = await storage.getPendingReimbursements(chatId);
+      await storage.close();
+
+      if (pending.length === 0) {
+        await ctx.reply("🎉 No pending reimbursements! All group debts are settled.", { message_thread_id: threadId });
+        return;
+      }
+
+      const inlineKeyboard: any[] = [];
+      let totalOwed = 0;
+      const lines = pending.map((r) => {
+        totalOwed += r.amount;
+        inlineKeyboard.push([{ text: `✅ Settled: ${r.debtorName} ($${r.amount.toFixed(2)})`, callback_data: `action:settle_reimbursement:${r.id}` }]);
+        return `• 👤 <b>${escapeHtml(r.debtorName)}</b> owes <code>SGD ${r.amount.toFixed(2)}</code> for <i>${escapeHtml(r.description)}</i>`;
+      });
+
+      await ctx.reply(`💸 <b>Pending Receivables (Total: SGD ${totalOwed.toFixed(2)}):</b>\n\n${lines.join("\n\n")}`, {
+        parse_mode: "HTML",
+        message_thread_id: threadId,
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+      return;
+    }
+
     if (text.startsWith("/assign ")) {
       const workerName = text.split(" ")[1]?.trim();
       if (workerName && threadId) {
@@ -532,6 +559,18 @@ Output format MUST be EXACTLY:
           await ctx.reply("⚠️ SkillOpt optimization data not found or expired.");
        }
        await storage.close();
+    } else if (data.startsWith("action:settle_reimbursement:")) {
+       const id = parseInt(data.replace("action:settle_reimbursement:", ""));
+       await ctx.answerCallbackQuery({ text: "Marking settled..." });
+       const storage = new StorageService();
+       await storage.initialize();
+       const settled = await storage.settleReimbursement(id);
+       await storage.close();
+       if (settled) {
+          await ctx.editMessageText("🎉 <b>Debt marked as settled!</b>", { parse_mode: "HTML" });
+       } else {
+          await ctx.reply("⚠️ Reimbursement not found or already settled.");
+       }
     } else if (data.startsWith("action:delete_reminder:")) {
        const reminderId = parseInt(data.replace("action:delete_reminder:", ""));
        await ctx.answerCallbackQuery({ text: "Deleting reminder..." });

@@ -221,11 +221,29 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
         textBody = msgData.snippet || "";
       } else {
         textBody = stripHtmlTags(textBody);
-      }
-      
-      const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
+    const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
       
       if (parsed && parsed.is_receipt) {
+        // Check if this incoming payment matches an active pending reimbursement
+        const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
+        if (isIncoming && parsed.amount && parsed.description) {
+          const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
+          if (matched) {
+            console.log(`[EmailPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
+            if (bot) {
+              const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
+              const opts: any = { parse_mode: "Markdown" };
+              if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
+              await bot.api.sendMessage(
+                chatId,
+                `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayLah/PayNow for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                opts
+              );
+            }
+            continue;
+          }
+        }
+
         console.log(`[EmailPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
         const pendingId = await storage.createPendingExpense({
           chatId,
