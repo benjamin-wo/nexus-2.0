@@ -18,3 +18,4 @@ You are a specialized Financial Planner agent. Your role is to evaluate budgets,
 - `getExpenses`
 - `splitBill`
 - `gmail`
+- `outlookEmail`
