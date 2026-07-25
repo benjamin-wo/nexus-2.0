@@ -74,29 +74,61 @@ async function getOrCreateLabel(accessToken: string): Promise<string> {
   return createData.id;
 }
 
-function getEmailBody(payload: any): string {
+function getEmailParts(payload: any): { plain: string; html: string } {
+  let plain = '';
+  let html = '';
+
+  if (!payload) return { plain, html };
+
   if (payload.mimeType === 'text/plain' && payload.body?.data) {
-    return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+    plain += Buffer.from(payload.body.data, 'base64').toString('utf-8') + '\n';
+  } else if (payload.mimeType === 'text/html' && payload.body?.data) {
+    html += Buffer.from(payload.body.data, 'base64').toString('utf-8') + '\n';
   }
-  
-  let body = '';
-  if (payload.parts) {
+
+  if (payload.parts && Array.isArray(payload.parts)) {
     for (const part of payload.parts) {
-      if (part.mimeType === 'text/plain' && part.body?.data) {
-        return Buffer.from(part.body.data, 'base64').toString('utf-8');
-      } else if (part.parts) {
-        body += getEmailBody(part);
-      }
+      const res = getEmailParts(part);
+      plain += res.plain;
+      html += res.html;
     }
   }
-  return body;
+
+  return { plain, html };
+}
+
+function getEmailBody(payload: any): string {
+  const { plain, html } = getEmailParts(payload);
+  if (plain.trim().length > 10) {
+    return plain;
+  }
+  if (html.trim().length > 0) {
+    return stripHtmlTags(html);
+  }
+  return '';
 }
 
 function stripHtmlTags(html: string): string {
   let text = html.replace(/<style[^>]*>.*?<\/style>/gi, '');
   text = text.replace(/<script[^>]*>.*?<\/script>/gi, '');
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  text = text.replace(/<\/(?:div|p|tr|li|h[1-6]|table|blockquote)>/gi, '\n');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/td>/gi, ' ');
   text = text.replace(/<[^>]+>/g, ' ');
-  return text.replace(/\s+/g, ' ').trim();
+
+  text = text
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#160;/g, ' ')
+    .replace(/&#8217;/g, "'");
+
+  return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
 }
 
 async function extractExpense(content: string, subject: string, fromHeader: string): Promise<any> {
@@ -112,13 +144,13 @@ Email Metadata:
 Extract the following details from this email:
 - is_receipt (boolean: true if it is a financial receipt or transaction alert, false otherwise)
 - amount (number only, or null if not found or is_receipt is false)
-- description: Infer the clean, recognizable name of the merchant, shop, service, or product. If ambiguous, set to null.
+- description: Infer the clean, recognizable name of the merchant, shop, service, payee, or transfer recipient (e.g. "Toast Box", "Kopitiam", "John Tan"). For DBS PayLah! or PayNow payments/transfers, extract the merchant or person's name receiving the money. DO NOT output "Unknown" or "null" as a literal string. If the payee/merchant cannot be identified at all, output null.
 - category: Categorize the expense (e.g. Food, Shopping, Transfer, Transport, Groceries, Health, Subscription, Travel, Utilities, etc). If completely unsure, output null.
 - payment_mode: Map the credit card or payment wallet by applying these rules strictly:
+  * If it is a DBS PayLah! wallet alert, or from paylah.alert@dbs.com, or the subject/body mentions PayLah / DBS PayLah!, output: "PayLah!"
   * If it is a UOB email and the transaction references card ending in "6405", output: "UOB Krisflyer"
   * If it is a UOB email and the transaction references card ending in "5184", output: "UOB Visa Signature"
-  * If it is a DBS/POSB transaction alert (but NOT a DBS PayLah! wallet alert), output: "DBS Womens"
-  * If it is a DBS PayLah! wallet alert (e.g., from paylah.alert@dbs.com), output: "PayLah!"
+  * If it is a DBS/POSB transaction alert (and NOT a DBS PayLah! wallet alert), output: "DBS Womens"
   * If it is a Citibank email, output: "CitiBank Rewards"
   * If it is a HSBC email, output: "HSBC Revolution"
   * If none of the above rules match but you are certain it is a credit card transaction, output: "Credit Card"
@@ -172,7 +204,7 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
     const yesterday = new Date(Date.now() - 86400000 + (8 * 3600000));
     const yStr = `${yesterday.getFullYear()}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getDate().toString().padStart(2, '0')}`;
     
-    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg "charge" "transaction" "made" -due) OR (from:paylah.alert@dbs.com "Amount" "Transaction") OR (from:unialerts@uobgroup.com "transaction") OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk subject:"Transaction Alerts" "Transaction" "Amount") OR (from:ibanking.alert@dbs.com subject:"Card Transaction Alert"))`;
+    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg "charge" "transaction" "made" -due) OR (from:paylah.alert@dbs.com) OR (from:ibanking.alert@dbs.com "PayLah") OR (from:dbsalert@dbs.com "PayLah") OR (subject:"PayLah") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com "transaction") OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk subject:"Transaction Alerts" "Transaction" "Amount") OR (from:ibanking.alert@dbs.com subject:"Card Transaction Alert"))`;
     const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=5`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });

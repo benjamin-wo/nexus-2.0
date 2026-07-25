@@ -26,6 +26,7 @@ export interface Reminder {
   message: string;
   dueAt: Date;
   sent: boolean;
+  cronExpression?: string | null;
 }
 
 export interface LogEntry {
@@ -90,6 +91,7 @@ export interface IStorage {
   createReminder(reminder: Reminder): Promise<number>;
   getPendingReminders(): Promise<Reminder[]>;
   markReminderSent(id: number): Promise<void>;
+  updateReminderDueAt(id: number, nextDueAt: Date): Promise<void>;
   logEvent(log: LogEntry): Promise<void>;
   getRecentLogs(limit?: number): Promise<any[]>;
   getLogsPastHours(hours: number): Promise<any[]>;
@@ -163,8 +165,11 @@ export class StorageService implements IStorage {
             message TEXT NOT NULL,
             due_at TIMESTAMP NOT NULL,
             sent BOOLEAN DEFAULT FALSE,
+            cron_expression TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
+          
+          ALTER TABLE reminders ADD COLUMN IF NOT EXISTS cron_expression TEXT;
           
           CREATE TABLE IF NOT EXISTS logs (
             id SERIAL PRIMARY KEY,
@@ -277,9 +282,14 @@ export class StorageService implements IStorage {
           message TEXT NOT NULL,
           due_at DATETIME NOT NULL,
           sent BOOLEAN DEFAULT FALSE,
+          cron_expression TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
+
+      try {
+        this.sqliteDb.run("ALTER TABLE reminders ADD COLUMN cron_expression TEXT;");
+      } catch (_) {}
 
       this.sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS logs (
@@ -454,16 +464,16 @@ export class StorageService implements IStorage {
     const dueStr = reminder.dueAt.toISOString();
     if (this.isPostgres && this.pgPool) {
       const res = await this.pgPool.query(
-        "INSERT INTO reminders (chat_id, message, due_at, sent) VALUES ($1, $2, $3, $4) RETURNING id",
-        [reminder.chatId, reminder.message, dueStr, reminder.sent ? true : false]
+        "INSERT INTO reminders (chat_id, message, due_at, sent, cron_expression) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        [reminder.chatId, reminder.message, dueStr, reminder.sent ? true : false, reminder.cronExpression || null]
       );
       return res.rows[0].id;
     } else if (this.sqliteDb) {
       const res = this.sqliteDb
         .prepare(
-          "INSERT INTO reminders (chat_id, message, due_at, sent) VALUES (?, ?, ?, ?) RETURNING id"
+          "INSERT INTO reminders (chat_id, message, due_at, sent, cron_expression) VALUES (?, ?, ?, ?, ?) RETURNING id"
         )
-        .get(reminder.chatId, reminder.message, dueStr, reminder.sent ? 1 : 0) as any;
+        .get(reminder.chatId, reminder.message, dueStr, reminder.sent ? 1 : 0, reminder.cronExpression || null) as any;
       return res.id;
     }
     return 0;
@@ -473,7 +483,7 @@ export class StorageService implements IStorage {
     const nowStr = new Date().toISOString();
     if (this.isPostgres && this.pgPool) {
       const res = await this.pgPool.query(
-        "SELECT id, chat_id, message, due_at, sent FROM reminders WHERE sent = FALSE AND due_at <= $1",
+        "SELECT id, chat_id, message, due_at, sent, cron_expression FROM reminders WHERE sent = FALSE AND due_at <= $1",
         [nowStr]
       );
       return res.rows.map((row: any) => ({
@@ -482,11 +492,12 @@ export class StorageService implements IStorage {
         message: row.message,
         dueAt: new Date(row.due_at),
         sent: row.sent,
+        cronExpression: row.cron_expression || undefined,
       }));
     } else if (this.sqliteDb) {
       const rows = this.sqliteDb
         .prepare(
-          "SELECT id, chat_id, message, due_at, sent FROM reminders WHERE sent = 0 AND due_at <= ?"
+          "SELECT id, chat_id, message, due_at, sent, cron_expression FROM reminders WHERE sent = 0 AND due_at <= ?"
         )
         .all(nowStr) as any[];
       return rows.map((row) => ({
@@ -495,6 +506,7 @@ export class StorageService implements IStorage {
         message: row.message,
         dueAt: new Date(row.due_at),
         sent: row.sent === 1 || row.sent === true,
+        cronExpression: row.cron_expression || undefined,
       }));
     }
     return [];
@@ -505,6 +517,15 @@ export class StorageService implements IStorage {
       await this.pgPool.query("UPDATE reminders SET sent = TRUE WHERE id = $1", [id]);
     } else if (this.sqliteDb) {
       this.sqliteDb.prepare("UPDATE reminders SET sent = 1 WHERE id = ?").run(id);
+    }
+  }
+
+  async updateReminderDueAt(id: number, nextDueAt: Date): Promise<void> {
+    const dueStr = nextDueAt.toISOString();
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query("UPDATE reminders SET due_at = $1, sent = FALSE WHERE id = $2", [dueStr, id]);
+    } else if (this.sqliteDb) {
+      this.sqliteDb.prepare("UPDATE reminders SET due_at = ?, sent = 0 WHERE id = ?").run(dueStr, id);
     }
   }
 

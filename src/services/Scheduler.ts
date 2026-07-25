@@ -119,8 +119,16 @@ Do not apply the patch directly, just output it.`;
       for (const item of pending) {
         if (this.onReminderTrigger) {
           try {
-            await this.onReminderTrigger(item.chatId, `🔔 **Reminder:** ${item.message}`);
-            await storage.markReminderSent(item.id!);
+            if (item.cronExpression) {
+              await this.onReminderTrigger(item.chatId, `⏰ **Recurring Reminder:** ${item.message}`);
+              const { getNextCronDate } = require("../utils/cron");
+              const nextDueAt = getNextCronDate(item.cronExpression, new Date());
+              await storage.updateReminderDueAt(item.id!, nextDueAt);
+              console.log(`[Scheduler] Rescheduled recurring reminder ${item.id} to ${nextDueAt.toISOString()}`);
+            } else {
+              await this.onReminderTrigger(item.chatId, `🔔 **Reminder:** ${item.message}`);
+              await storage.markReminderSent(item.id!);
+            }
           } catch (err: any) {
             console.error(`[Scheduler] Failed to trigger reminder ${item.id}:`, err.message);
           }
