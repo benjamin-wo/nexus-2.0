@@ -30,3 +30,5 @@ vars.json
 fetch_logs.ts
 .agent/cache/
 assistant.db*
+skillopt_dataset/
+.venv/

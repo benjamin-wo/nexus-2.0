@@ -514,6 +514,24 @@ Output format MUST be EXACTLY:
        } else {
           await ctx.reply("⚠️ Patch data not found or expired.");
        }
+    } else if (data.startsWith("action:approve_skillopt:")) {
+       await ctx.answerCallbackQuery({ text: "Applying SkillOpt optimization..." });
+       const skillName = data.split(":")[2];
+       const storage = new StorageService();
+       await storage.initialize();
+       const pendingOpt = await storage.getProfileValue(`SKILLOPT_PENDING_${skillName}`);
+       if (pendingOpt) {
+          const { optimizedPrompt } = pendingOpt;
+          const skillPath = join(process.cwd(), ".agent", "skills", skillName, "SKILL.md");
+          await Bun.write(skillPath, optimizedPrompt);
+          const registry = SkillRegistry.getInstance();
+          await registry.reload();
+          await ctx.editMessageText(`🤖 ✅ <b>SkillOpt Prompt Updated:</b> <code>${skillName}</code>. SkillRegistry reloaded.`, { parse_mode: "HTML" });
+          await storage.setProfileValue(`SKILLOPT_PENDING_${skillName}`, null);
+       } else {
+          await ctx.reply("⚠️ SkillOpt optimization data not found or expired.");
+       }
+       await storage.close();
     } else if (data.startsWith("action:delete_reminder:")) {
        const reminderId = parseInt(data.replace("action:delete_reminder:", ""));
        await ctx.answerCallbackQuery({ text: "Deleting reminder..." });

@@ -179,6 +179,16 @@ Do not apply the patch directly, just output it.`;
         maintenanceReport += "✅ No system or execution anomalies detected in the logs directory.\n";
       }
 
+      // Run SkillOpt Trajectory Adapter
+      const { SkillOptService } = require("./SkillOptService");
+      const skillOpt = new SkillOptService();
+      if (skillOpt.isEnvironmentReady()) {
+        const optRes = await skillOpt.runAdapter();
+        if (optRes.exitCode === 0) {
+          maintenanceReport += "\n🤖 **SkillOpt Engine:** Trajectory optimization dataset generated successfully.\n";
+        }
+      }
+
       // If user triggered this manually or we have a active chat channel, write the report
       const reportPath = join(process.cwd(), ".agent", "devops_report.md");
       const Bun = (globalThis as any).Bun;
