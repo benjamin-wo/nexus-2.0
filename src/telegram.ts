@@ -6,6 +6,7 @@ import { TaskRegistry } from "./core/TaskRegistry";
 import { StorageService } from "./database/Storage";
 import { join } from "path";
 import { startEmailPoller } from "./emailPoller";
+import { startOutlookPoller } from "./outlookPoller";
 
 function escapeHtml(text: string): string {
   return text
@@ -842,8 +843,9 @@ Output format MUST be EXACTLY:
 
   console.log(`[Telegram] Web Server started on port ${port}`);
   
-  // 7. Start the Email Poller background loop (every 15 minutes)
+  // 7. Start the Email Poller background loops (every 15 minutes)
   startEmailPoller(bot, 15 * 60 * 1000);
+  startOutlookPoller(bot, 15 * 60 * 1000);
 
   console.log("[Telegram] Bot starting...");
   await bot.start();
