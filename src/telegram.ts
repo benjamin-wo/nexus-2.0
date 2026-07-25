@@ -836,8 +836,6 @@ Output format MUST be EXACTLY:
       } catch (err: any) {
         console.error("[Web Server Error]", err);
         return new Response(`Server Error: ${err.message}`, { status: 500 });
-      } finally {
-        await storage.close();
       }
     }
   });

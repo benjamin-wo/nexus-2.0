@@ -1,9 +1,8 @@
 [providers]
 bun = true
-node = false
 
 [phases.setup]
-nixPkgs = ["bun"]
+nixPkgs = ["bun", "nodejs-20_x"]
 
 [phases.install]
 cmds = ["bun install"]
