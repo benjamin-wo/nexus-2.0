@@ -265,6 +265,31 @@ async function main() {
       return;
     }
 
+    if (text === "/authorize_outlook" || text === "/authorize_microsoft" || text === "/outlook_auth") {
+      const port = process.env.PORT || 3000;
+      const webappUrl = process.env.WEBAPP_URL || `http://localhost:${port}`;
+      const base = webappUrl.endsWith("/") ? webappUrl.slice(0, -1) : webappUrl;
+      const redirectUri = `${base}/api/oauth/microsoft/callback`;
+      const clientId = process.env.MICROSOFT_CLIENT_ID || "";
+
+      if (!clientId) {
+        await ctx.reply("⚠️ <code>MICROSOFT_CLIENT_ID</code> is not defined in the environment.", { parse_mode: "HTML", message_thread_id: threadId });
+        return;
+      }
+
+      const scopes = encodeURIComponent("https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite offline_access");
+      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${scopes}&state=${chatId}`;
+
+      await ctx.reply(`🔗 <b>Authorize Microsoft / Outlook Access</b>\n\nClick the button below to grant Nexus access to read your Outlook/Hotmail emails:`, {
+        parse_mode: "HTML",
+        message_thread_id: threadId,
+        reply_markup: {
+          inline_keyboard: [[{ text: "🔑 Authorize Outlook Account", url: authUrl }]]
+        }
+      });
+      return;
+    }
+
     if (text.includes("🚨 **MANUAL_BUG_REPORT**")) {
        const storage = new StorageService();
        await storage.initialize();
@@ -818,6 +843,68 @@ Output format MUST be EXACTLY:
                 <div class="card">
                   <h1>✓ Authenticated successfully!</h1>
                   <p>Nexus has been granted Google access. You can now safely close this window and return to your Telegram chat.</p>
+                </div>
+              </body>
+            </html>
+          `, { headers: { "Content-Type": "text/html" } });
+        }
+
+        if (url.pathname === "/api/oauth/microsoft/callback") {
+          const code = url.searchParams.get("code");
+          const chatId = url.searchParams.get("state");
+
+          if (!code || !chatId) {
+            return new Response("Missing code or state parameters", { status: 400 });
+          }
+
+          const webappUrl = process.env.WEBAPP_URL || `http://localhost:${port}`;
+          const base = webappUrl.endsWith("/") ? webappUrl.slice(0, -1) : webappUrl;
+          const redirectUri = `${base}/api/oauth/microsoft/callback`;
+
+          const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              client_id: process.env.MICROSOFT_CLIENT_ID || "",
+              client_secret: process.env.MICROSOFT_CLIENT_SECRET || "",
+              code,
+              redirect_uri: redirectUri,
+              grant_type: "authorization_code",
+            }),
+          });
+
+          if (!tokenRes.ok) {
+            const err = await tokenRes.text();
+            return new Response(`Failed to exchange Microsoft OAuth token: ${err}`, { status: 500 });
+          }
+
+          const tokens = (await tokenRes.json()) as any;
+          let refresh = tokens.refresh_token;
+          if (!refresh) {
+            const existing = await storage.getMicrosoftCredentials(chatId);
+            if (existing) refresh = existing.refresh_token;
+          }
+
+          await storage.saveMicrosoftCredentials(chatId, {
+            access_token: tokens.access_token,
+            refresh_token: refresh || "",
+            expiry_date: Date.now() + tokens.expires_in * 1000,
+          });
+
+          return new Response(`
+            <html>
+              <head>
+                <title>Outlook Authentication Successful</title>
+                <style>
+                  body { background-color: #121214; color: #ffffff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                  .card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 40px; border-radius: 16px; text-align: center; }
+                  h1 { color: #4caf50; }
+                </style>
+              </head>
+              <body>
+                <div class="card">
+                  <h1>✓ Outlook Authenticated Successfully!</h1>
+                  <p>Nexus has been granted Outlook/Hotmail access. You can now close this window and return to Telegram.</p>
                 </div>
               </body>
             </html>

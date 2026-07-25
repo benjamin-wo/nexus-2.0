@@ -12,6 +12,12 @@ export interface GoogleCredentials {
   expiry_date: number;
 }
 
+export interface MicrosoftCredentials {
+  access_token: string;
+  refresh_token: string;
+  expiry_date: number;
+}
+
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
@@ -270,6 +276,13 @@ export class StorageService implements IStorage {
             expiry_date BIGINT NOT NULL
           );
 
+          CREATE TABLE IF NOT EXISTS microsoft_credentials (
+            chat_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            expiry_date BIGINT NOT NULL
+          );
+
           CREATE TABLE IF NOT EXISTS runtime_skills (
               id SERIAL PRIMARY KEY,
               name VARCHAR(100) UNIQUE NOT NULL,
@@ -418,6 +431,15 @@ export class StorageService implements IStorage {
 
       this.sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS google_credentials (
+          chat_id TEXT PRIMARY KEY,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT NOT NULL,
+          expiry_date INTEGER NOT NULL
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS microsoft_credentials (
           chat_id TEXT PRIMARY KEY,
           access_token TEXT NOT NULL,
           refresh_token TEXT NOT NULL,
@@ -1198,6 +1220,86 @@ export class StorageService implements IStorage {
     } else if (this.sqliteDb) {
       const rows = this.sqliteDb
         .prepare("SELECT chat_id, access_token, refresh_token, expiry_date FROM google_credentials")
+        .all() as any[];
+      return rows.map((row) => ({
+        chatId: row.chat_id,
+        credentials: {
+          access_token: row.access_token,
+          refresh_token: row.refresh_token,
+          expiry_date: Number(row.expiry_date),
+        }
+      }));
+    }
+    return [];
+  }
+
+  async saveMicrosoftCredentials(chatId: string, credentials: MicrosoftCredentials): Promise<void> {
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        `INSERT INTO microsoft_credentials (chat_id, access_token, refresh_token, expiry_date)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (chat_id) DO UPDATE
+         SET access_token = EXCLUDED.access_token,
+             refresh_token = CASE WHEN EXCLUDED.refresh_token <> '' THEN EXCLUDED.refresh_token ELSE microsoft_credentials.refresh_token END,
+             expiry_date = EXCLUDED.expiry_date`,
+        [chatId, credentials.access_token, credentials.refresh_token, credentials.expiry_date]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb
+        .prepare(
+          `INSERT INTO microsoft_credentials (chat_id, access_token, refresh_token, expiry_date)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(chat_id) DO UPDATE SET
+             access_token = excluded.access_token,
+             refresh_token = CASE WHEN excluded.refresh_token <> '' THEN excluded.refresh_token ELSE microsoft_credentials.refresh_token END,
+             expiry_date = excluded.expiry_date`
+        )
+        .run(chatId, credentials.access_token, credentials.refresh_token, credentials.expiry_date);
+    }
+  }
+
+  async getMicrosoftCredentials(chatId: string): Promise<MicrosoftCredentials | null> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT access_token, refresh_token, expiry_date FROM microsoft_credentials WHERE chat_id = $1",
+        [chatId]
+      );
+      if (res.rows.length === 0) return null;
+      return {
+        access_token: res.rows[0].access_token,
+        refresh_token: res.rows[0].refresh_token,
+        expiry_date: Number(res.rows[0].expiry_date),
+      };
+    } else if (this.sqliteDb) {
+      const row = this.sqliteDb
+        .prepare("SELECT access_token, refresh_token, expiry_date FROM microsoft_credentials WHERE chat_id = ?")
+        .get(chatId) as any;
+      if (!row) return null;
+      return {
+        access_token: row.access_token,
+        refresh_token: row.refresh_token,
+        expiry_date: Number(row.expiry_date),
+      };
+    }
+    return null;
+  }
+
+  async getAllMicrosoftCredentials(): Promise<{chatId: string, credentials: MicrosoftCredentials}[]> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT chat_id, access_token, refresh_token, expiry_date FROM microsoft_credentials"
+      );
+      return res.rows.map((row: any) => ({
+        chatId: row.chat_id,
+        credentials: {
+          access_token: row.access_token,
+          refresh_token: row.refresh_token,
+          expiry_date: Number(row.expiry_date),
+        }
+      }));
+    } else if (this.sqliteDb) {
+      const rows = this.sqliteDb
+        .prepare("SELECT chat_id, access_token, refresh_token, expiry_date FROM microsoft_credentials")
         .all() as any[];
       return rows.map((row) => ({
         chatId: row.chat_id,

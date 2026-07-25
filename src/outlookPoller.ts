@@ -1,162 +1,221 @@
-import { ImapFlow } from "imapflow";
 import { Bot, InlineKeyboard } from "grammy";
-import { StorageService } from "./database/Storage";
+import { StorageService, MicrosoftCredentials } from "./database/Storage";
 import { extractExpense } from "./emailPoller";
 
 function stripHtmlTags(html: string): string {
   return html.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function pollOutlook(bot?: Bot) {
-  const email = process.env.OUTLOOK_EMAIL?.trim();
-  const password = process.env.OUTLOOK_APP_PASSWORD?.replace(/\s+/g, "").trim();
+async function refreshMicrosoftToken(chatId: string, refreshToken: string, storage: StorageService): Promise<string | null> {
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
 
-  if (!email || !password) {
-    return; // Outlook credentials not configured on this instance
+  if (!clientId || !clientSecret || !refreshToken) {
+    return null;
   }
 
-  console.log(`[OutlookPoller] Starting poll cycle for ${email}...`);
+  try {
+    const res = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
 
-  const client = new ImapFlow({
-    host: "outlook.office365.com",
-    port: 993,
-    secure: true,
-    auth: {
-      user: email,
-      pass: password,
-    },
-    logger: false,
-  });
+    if (!res.ok) {
+      console.error(`[OutlookPoller] Token refresh failed for chat ${chatId}: ${await res.text()}`);
+      return null;
+    }
 
+    const data = (await res.json()) as any;
+    const newAccessToken = data.access_token;
+    const newRefreshToken = data.refresh_token || refreshToken;
+    const newExpiry = Date.now() + data.expires_in * 1000;
+
+    await storage.saveMicrosoftCredentials(chatId, {
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken,
+      expiry_date: newExpiry,
+    });
+
+    return newAccessToken;
+  } catch (err: any) {
+    console.error(`[OutlookPoller] Exception refreshing token for ${chatId}:`, err.message);
+    return null;
+  }
+}
+
+export async function pollUserOutlook(chatId: string, creds: MicrosoftCredentials, bot?: Bot) {
   const storage = new StorageService();
   await storage.initialize();
 
   try {
-    await client.connect();
-    const lock = await client.getMailboxLock("INBOX");
+    let accessToken = creds.access_token;
 
-    try {
-      // Search for unread messages (seen: false in ImapFlow)
-      const messages = client.fetch({ seen: false }, { source: true, envelope: true, uid: true });
-
-      for await (const msg of messages) {
-        const envelope = msg.envelope;
-        const subject = envelope.subject || "No Subject";
-        const fromHeader = envelope.from?.[0]?.address || "Unknown";
-        const uid = msg.uid;
-
-        console.log(`[OutlookPoller] Processing message UID ${uid} ("${subject}") from ${fromHeader}`);
-
-        const source = msg.source.toString("utf-8");
-        const textBody = stripHtmlTags(source).substring(0, 4000);
-
-        const parsed = await extractExpense(textBody, subject, fromHeader);
-
-        // Find primary chat_id for this single-user deployment
-        const activeTasks = await storage.getActiveTasks();
-        const logs = await storage.getRecentLogs(10);
-        let chatId = logs.find((l: any) => l.details && l.details.chatId)?.details?.chatId || "default_chat";
-
-        // Try getting chat ID from user_profile or recent conversations if possible
-        if (chatId === "default_chat" && storage.isPostgres) {
-          const res = await (storage as any).pgPool.query(
-            "SELECT chat_id FROM conversations ORDER BY id DESC LIMIT 1"
-          );
-          if (res.rows.length > 0) chatId = res.rows[0].chat_id;
-        }
-
-        if (parsed && parsed.is_receipt) {
-          const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
-          if (isIncoming && parsed.amount && parsed.description) {
-            const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
-            if (matched) {
-              console.log(`[OutlookPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
-              if (bot) {
-                const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-                const opts: any = { parse_mode: "Markdown" };
-                if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-                await bot.api.sendMessage(
-                  chatId,
-                  `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayNow/Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
-                  opts
-                );
-              }
-              // Mark message as read
-              await client.messageFlagsAdd({ uid }, ["\\Seen"]);
-              continue;
-            }
-          }
-
-          console.log(`[OutlookPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
-          const pendingId = await storage.createPendingExpense({
-            chatId,
-            amount: parsed.amount !== undefined ? Number(parsed.amount) : null,
-            category: parsed.category || null,
-            description: parsed.description || null,
-            paymentMode: parsed.payment_mode || null,
-          });
-
-          if (bot) {
-            const amountStr = parsed.amount !== null && parsed.amount !== undefined ? `$${parsed.amount}` : "[Missing]";
-            const descStr = parsed.description || "[Missing]";
-            const catStr = parsed.category || "[Missing]";
-            const payStr = parsed.payment_mode || "[Missing]";
-
-            let msgText = `📧 **New Receipt Found (Outlook)!**\n\n`;
-            msgText += `• **Amount:** ${amountStr}\n`;
-            msgText += `• **Desc:** ${descStr}\n`;
-            msgText += `• **Category:** ${catStr}\n`;
-            msgText += `• **Payment:** ${payStr}\n\n`;
-
-            const missing = [];
-            if (!parsed.amount) missing.push("Amount");
-            if (!parsed.description) missing.push("Description");
-            if (!parsed.category) missing.push("Category");
-            if (!parsed.payment_mode) missing.push("Payment Mode");
-
-            let keyboard = new InlineKeyboard();
-            if (missing.length > 0) {
-              msgText += `Please provide the missing details (e.g. ${missing.join(", ")}) so I can log this expense.`;
-              keyboard.text("❌ Discard", `log_no:${pendingId}`).text("✏️ Complete details", `log_edit:${pendingId}`);
-            } else {
-              msgText += `Should I log this?`;
-              keyboard
-                .text("✅ Yes, log it", `log_yes:${pendingId}`)
-                .text("❌ Discard", `log_no:${pendingId}`)
-                .row()
-                .text("✏️ Edit details", `log_edit:${pendingId}`);
-            }
-
-            try {
-              const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-              const opts: any = { parse_mode: "Markdown", reply_markup: keyboard };
-              if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-              await bot.api.sendMessage(chatId, msgText, opts);
-            } catch (e) {
-              console.error(`[OutlookPoller] Error sending Telegram message to ${chatId}:`, e);
-            }
-          }
-        }
-
-        // Mark as read in IMAP so we don't re-process
-        await client.messageFlagsAdd({ uid }, ["\\Seen"]);
+    // Check token expiry (refresh if expiring within 5 mins)
+    if (Date.now() >= creds.expiry_date - 300000) {
+      console.log(`[OutlookPoller] Access token expiring for chat ${chatId}, refreshing...`);
+      const refreshed = await refreshMicrosoftToken(chatId, creds.refresh_token, storage);
+      if (!refreshed) {
+        console.error(`[OutlookPoller] Unable to refresh token for chat ${chatId}.`);
+        return;
       }
-    } finally {
-      lock.release();
+      accessToken = refreshed;
     }
 
-    await client.logout();
+    // Fetch unread messages from Microsoft Graph API
+    const graphRes = await fetch(
+      "https://graph.microsoft.com/v1.0/me/messages?$filter=isRead eq false&$top=5&$select=id,subject,from,body,bodyPreview,createdDateTime",
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+
+    if (!graphRes.ok) {
+      const errText = await graphRes.text();
+      console.error(`[OutlookPoller] Microsoft Graph API error for ${chatId}: ${errText}`);
+      return;
+    }
+
+    const graphData = (await graphRes.json()) as any;
+    const messages = graphData.value || [];
+
+    if (messages.length === 0) return;
+
+    console.log(`[OutlookPoller] Found ${messages.length} unread Microsoft emails for chat ${chatId}`);
+
+    for (const msg of messages) {
+      const subject = msg.subject || "No Subject";
+      const fromHeader = msg.from?.emailAddress?.address || "Unknown";
+      const textBody = stripHtmlTags(msg.body?.content || msg.bodyPreview || "").substring(0, 4000);
+
+      const parsed = await extractExpense(textBody, subject, fromHeader);
+
+      if (parsed && parsed.is_receipt) {
+        const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
+        if (isIncoming && parsed.amount && parsed.description) {
+          const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
+          if (matched) {
+            console.log(`[OutlookPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
+            if (bot) {
+              const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
+              const opts: any = { parse_mode: "Markdown" };
+              if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
+              await bot.api.sendMessage(
+                chatId,
+                `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                opts
+              );
+            }
+
+            // Mark message as read via Microsoft Graph PATCH API
+            await fetch(`https://graph.microsoft.com/v1.0/me/messages/${msg.id}`, {
+              method: "PATCH",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ isRead: true }),
+            });
+            continue;
+          }
+        }
+
+        console.log(`[OutlookPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
+        const pendingId = await storage.createPendingExpense({
+          chatId,
+          amount: parsed.amount !== undefined ? Number(parsed.amount) : null,
+          category: parsed.category || null,
+          description: parsed.description || null,
+          paymentMode: parsed.payment_mode || null,
+        });
+
+        if (bot) {
+          const amountStr = parsed.amount !== null && parsed.amount !== undefined ? `$${parsed.amount}` : "[Missing]";
+          const descStr = parsed.description || "[Missing]";
+          const catStr = parsed.category || "[Missing]";
+          const payStr = parsed.payment_mode || "[Missing]";
+
+          let msgText = `📧 **New Receipt Found (Outlook)!**\n\n`;
+          msgText += `• **Amount:** ${amountStr}\n`;
+          msgText += `• **Desc:** ${descStr}\n`;
+          msgText += `• **Category:** ${catStr}\n`;
+          msgText += `• **Payment:** ${payStr}\n\n`;
+
+          const missing = [];
+          if (!parsed.amount) missing.push("Amount");
+          if (!parsed.description) missing.push("Description");
+          if (!parsed.category) missing.push("Category");
+          if (!parsed.payment_mode) missing.push("Payment Mode");
+
+          let keyboard = new InlineKeyboard();
+          if (missing.length > 0) {
+            msgText += `Please provide the missing details (e.g. ${missing.join(", ")}) so I can log this expense.`;
+            keyboard.text("❌ Discard", `log_no:${pendingId}`).text("✏️ Complete details", `log_edit:${pendingId}`);
+          } else {
+            msgText += `Should I log this?`;
+            keyboard
+              .text("✅ Yes, log it", `log_yes:${pendingId}`)
+              .text("❌ Discard", `log_no:${pendingId}`)
+              .row()
+              .text("✏️ Edit details", `log_edit:${pendingId}`);
+          }
+
+          try {
+            const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
+            const opts: any = { parse_mode: "Markdown", reply_markup: keyboard };
+            if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
+            await bot.api.sendMessage(chatId, msgText, opts);
+          } catch (e) {
+            console.error(`[OutlookPoller] Error sending Telegram message to ${chatId}:`, e);
+          }
+        }
+      }
+
+      // Mark message as read via Microsoft Graph PATCH API
+      await fetch(`https://graph.microsoft.com/v1.0/me/messages/${msg.id}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ isRead: true }),
+      });
+    }
   } catch (err: any) {
-    console.error(`[OutlookPoller] Error polling Outlook IMAP for ${email}:`, err.message);
+    console.error(`[OutlookPoller] Error polling Microsoft Graph for ${chatId}:`, err.message);
+  } finally {
+    await storage.close();
+  }
+}
+
+export async function pollOutlook(bot?: Bot) {
+  console.log("[OutlookPoller] Starting poll cycle...");
+  const storage = new StorageService();
+  await storage.initialize();
+
+  try {
+    const userCreds = await storage.getAllMicrosoftCredentials();
+    if (userCreds.length === 0) {
+      return;
+    }
+
+    console.log(`[OutlookPoller] Found ${userCreds.length} users with Microsoft Credentials.`);
+    for (const { chatId, credentials } of userCreds) {
+      await pollUserOutlook(chatId, credentials, bot);
+    }
+  } catch (err: any) {
+    console.error("[OutlookPoller] Error in poll cycle:", err.message);
   } finally {
     await storage.close();
   }
 }
 
 export function startOutlookPoller(bot?: Bot, intervalMs: number = 15 * 60 * 1000) {
-  if (!process.env.OUTLOOK_EMAIL || !process.env.OUTLOOK_APP_PASSWORD) {
-    return;
-  }
   console.log(`[OutlookPoller] Initialized to run every ${intervalMs / 60000} minutes.`);
   pollOutlook(bot).catch((err) => console.error("[OutlookPoller] Initial poll failed:", err));
   setInterval(() => {

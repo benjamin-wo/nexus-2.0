@@ -1,105 +1,99 @@
-import { ImapFlow } from "imapflow";
+import { StorageService } from "../../../src/database/Storage";
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim();
 }
 
-export async function execute(args: { action?: "list" | "search"; query?: string }) {
-  const email = process.env.OUTLOOK_EMAIL?.trim();
-  const password = process.env.OUTLOOK_APP_PASSWORD?.replace(/\s+/g, "").trim();
-
-  if (!email || !password) {
-    return {
-      success: false,
-      message: "⚠️ Outlook credentials (OUTLOOK_EMAIL and OUTLOOK_APP_PASSWORD) are not configured on this instance.",
-    };
-  }
-
-  const client = new ImapFlow({
-    host: "outlook.office365.com",
-    port: 993,
-    secure: true,
-    auth: {
-      user: email,
-      pass: password,
-    },
-    logger: false,
-  });
+export async function execute(
+  args: { action?: "list" | "search"; query?: string },
+  context?: { chatId: string }
+) {
+  const chatId = context?.chatId || "default_cli_chat";
+  const storage = new StorageService();
+  await storage.initialize();
 
   try {
-    await client.connect();
-    const lock = await client.getMailboxLock("INBOX");
+    const creds = await storage.getMicrosoftCredentials(chatId);
+    if (!creds) {
+      return {
+        success: false,
+        message: "⚠️ Outlook/Hotmail account is not authorized yet. Please type `/authorize_outlook` in Telegram to link your account!",
+      };
+    }
 
-    try {
-      const status = await client.status("INBOX", { messages: true });
-      const total = status.messages || 0;
+    let accessToken = creds.access_token;
+    if (Date.now() >= creds.expiry_date - 300000) {
+      const clientId = process.env.MICROSOFT_CLIENT_ID;
+      const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
 
-      if (total === 0) {
-        return {
-          success: true,
-          message: `📧 Your Outlook inbox (${email}) is empty.`,
-        };
-      }
-
-      let searchRange: any;
-      if (args.query && args.query.trim().length > 0) {
-        searchRange = { body: args.query.trim() };
-      } else {
-        const startSeq = Math.max(1, total - 9);
-        searchRange = `${startSeq}:${total}`;
-      }
-
-      const messages = client.fetch(searchRange, { envelope: true, source: true, uid: true });
-      const results: any[] = [];
-
-      for await (const msg of messages) {
-        const envelope = msg.envelope;
-        const subject = envelope.subject || "No Subject";
-        const from = envelope.from?.[0]?.address || "Unknown";
-        const date = envelope.date ? envelope.date.toLocaleString() : "Unknown";
-        const snippet = stripHtml(msg.source.toString("utf-8")).substring(0, 180);
-
-        results.push({
-          uid: msg.uid,
-          subject,
-          from,
-          date,
-          snippet,
+      if (clientId && clientSecret && creds.refresh_token) {
+        const refreshRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            refresh_token: creds.refresh_token,
+            grant_type: "refresh_token",
+          }),
         });
+
+        if (refreshRes.ok) {
+          const data = (await refreshRes.json()) as any;
+          accessToken = data.access_token;
+          await storage.saveMicrosoftCredentials(chatId, {
+            access_token: data.access_token,
+            refresh_token: data.refresh_token || creds.refresh_token,
+            expiry_date: Date.now() + data.expires_in * 1000,
+          });
+        }
       }
+    }
 
-      // Reverse so newest appears first
-      results.reverse();
-      const topResults = results.slice(0, 5);
+    let graphUrl = "https://graph.microsoft.com/v1.0/me/messages?$top=5&$select=id,subject,from,body,bodyPreview,createdDateTime";
+    if (args.query && args.query.trim().length > 0) {
+      const filterStr = encodeURIComponent(`contains(subject,'${args.query.trim()}') or contains(body,'${args.query.trim()}')`);
+      graphUrl += `&$search="${args.query.trim()}"`;
+    }
 
-      if (topResults.length === 0) {
-        return {
-          success: true,
-          message: `📧 No Outlook emails found matching query: "${args.query || "recent"}"`,
-        };
-      }
+    const res = await fetch(graphUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
 
-      const formatted = topResults
-        .map(
-          (m, idx) =>
-            `${idx + 1}. <b>${m.subject}</b>\n   • From: <code>${m.from}</code>\n   • Date: ${m.date}\n   • Snippet: <i>${m.snippet}...</i>`
-        )
-        .join("\n\n");
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        message: `❌ Microsoft Graph API error: ${errText}`,
+      };
+    }
 
+    const data = (await res.json()) as any;
+    const messages = data.value || [];
+
+    if (messages.length === 0) {
       return {
         success: true,
-        count: topResults.length,
-        message: `📧 <b>Recent Outlook Emails (${email}):</b>\n\n${formatted}`,
+        message: `📧 No Outlook emails found matching query: "${args.query || "recent"}"`,
       };
-    } finally {
-      lock.release();
     }
-  } catch (err: any) {
+
+    const formatted = messages
+      .map((m: any, idx: number) => {
+        const subject = m.subject || "No Subject";
+        const from = m.from?.emailAddress?.address || "Unknown";
+        const date = m.createdDateTime ? new Date(m.createdDateTime).toLocaleString() : "Unknown";
+        const snippet = stripHtml(m.bodyPreview || m.body?.content || "").substring(0, 180);
+        return `${idx + 1}. <b>${subject}</b>\n   • From: <code>${from}</code>\n   • Date: ${date}\n   • Snippet: <i>${snippet}...</i>`;
+      })
+      .join("\n\n");
+
     return {
-      success: false,
-      message: `❌ Error reading Outlook IMAP (${email}): ${err.message}`,
+      success: true,
+      count: messages.length,
+      message: `📧 <b>Recent Outlook Emails:</b>\n\n${formatted}`,
     };
   } finally {
-    await client.logout().catch(() => {});
+    await storage.close();
   }
 }
