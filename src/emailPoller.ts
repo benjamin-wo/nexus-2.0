@@ -221,7 +221,9 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
         textBody = msgData.snippet || "";
       } else {
         textBody = stripHtmlTags(textBody);
-    const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
+      }
+      
+      const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
       
       if (parsed && parsed.is_receipt) {
         // Check if this incoming payment matches an active pending reimbursement
