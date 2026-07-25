@@ -57,6 +57,30 @@ export class Orchestrator {
         }
       }
 
+      // Fast-Path 1: Math Calculator Fast-Path
+      const calcMatch = userText.match(/^(?:calculate|evaluate|what\s+is|\=)\s*([\d\s\+\-\*\/\(\)\.]+)/i);
+      if (calcMatch && calcMatch[1].trim().length > 1) {
+        try {
+          const calcRes = await SkillRegistry.getInstance().executeSkill("calculator", { expression: calcMatch[1].trim() });
+          if (calcRes.success && calcRes.result !== undefined) {
+            return `🔢 **Calculation Result:**\n\`${calcMatch[1].trim()}\` = \`${calcRes.result}\``;
+          }
+        } catch (_) { /* fallback to worker agent */ }
+      }
+
+      // Fast-Path 2: Direct Bus Arrival Code Fast-Path (e.g. "bus 03519", "buses at 03519", "bus arrival 03519")
+      const busCodeMatch = userText.match(/^(?:bus|buses|bus\s+arrival|bus\s+timings?)(?:\s+at|\s+stop)?\s+(\d{5})$/i);
+      if (busCodeMatch) {
+        try {
+          const busRes = await SkillRegistry.getInstance().executeSkill("ltaDataMall", { action: "getBusArrivals", busStopId: busCodeMatch[1] });
+          if (busRes.success && busRes.services) {
+            const stopName = busRes.stopName ? `${busRes.stopName}, ${busRes.roadName}` : busRes.busStopCode;
+            const lines = busRes.services.map((s: any) => `• Bus **${s.serviceNo}**: ${s.nextBus || "—"}${s.nextBus2 ? ` · ${s.nextBus2}` : ""}`);
+            return `🚌 **Bus Stop ${busRes.busStopCode}** — ${stopName}\n${lines.join("\n")}`;
+          }
+        } catch (_) { /* fallback to worker agent */ }
+      }
+
       // 2. Fetch Chat History and personality/user context
       const history = await storage.getHistory(chatId, 15);
       

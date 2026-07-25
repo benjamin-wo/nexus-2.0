@@ -98,79 +98,90 @@ Format requirements:
         // Save LLM turn to the execution dialogue
         messages.push({ role: "assistant", content: completion, subagent: this.name });
 
-        // Extract thought and tool_call
+        // Extract thought and all tool_call matches (supports parallel tool calls)
         const thoughtMatch = completion.match(/<thought>([\s\S]*?)<\/thought>/i);
-        const toolCallMatch = completion.match(/<tool_call>([\s\S]*?)<\/tool_call>/i);
+        const toolCallMatches = Array.from(completion.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/gi));
 
         if (thoughtMatch) {
           console.log(`[Thought] ${thoughtMatch[1].trim()}`);
         }
 
-        if (toolCallMatch) {
-          const rawJson = toolCallMatch[1].trim();
-          let toolName = "";
-          let toolArgs: any = {};
+        if (toolCallMatches.length > 0) {
+          const parsedCalls: { toolName: string; toolArgs: any }[] = [];
+          const syntaxErrors: string[] = [];
 
-          try {
-            const parsed = JSON.parse(rawJson);
-            toolName = parsed.name || parsed.tool || parsed.toolName || parsed.function?.name || "";
-            
-            let rawArgs = parsed.arguments || parsed.args || parsed.parameters || parsed.function?.arguments;
-            
-            if (!rawArgs || (typeof rawArgs === "object" && Object.keys(rawArgs).length === 0)) {
-              const { name, tool, toolName, function: fnMeta, ...rest } = parsed;
-              rawArgs = rest;
-            }
+          for (const match of toolCallMatches) {
+            const rawJson = match[1].trim();
+            try {
+              const parsed = JSON.parse(rawJson);
+              const toolName = parsed.name || parsed.tool || parsed.toolName || parsed.function?.name || "";
+              let rawArgs = parsed.arguments || parsed.args || parsed.parameters || parsed.function?.arguments;
+              
+              if (!rawArgs || (typeof rawArgs === "object" && Object.keys(rawArgs).length === 0)) {
+                const { name, tool, toolName, function: fnMeta, ...rest } = parsed;
+                rawArgs = rest;
+              }
 
-            if (typeof rawArgs === "string") {
-              try {
-                toolArgs = JSON.parse(rawArgs);
-              } catch (_) {
+              let toolArgs: any = {};
+              if (typeof rawArgs === "string") {
+                try { toolArgs = JSON.parse(rawArgs); } catch (_) { toolArgs = rawArgs; }
+              } else {
                 toolArgs = rawArgs;
               }
-            } else {
-              toolArgs = rawArgs;
+              parsedCalls.push({ toolName, toolArgs });
+            } catch (err: any) {
+              syntaxErrors.push(`Invalid JSON in tool call: ${err.message}`);
             }
-          } catch (err: any) {
-            console.warn(`[WorkerAgent] JSON parse error on tool call: ${rawJson}`);
+          }
+
+          if (syntaxErrors.length > 0 && parsedCalls.length === 0) {
             messages.push({
               role: "user",
-              content: `<tool_response>{"success": false, "error": "Invalid JSON format in tool call: ${err.message}. Please correct the formatting and try again."}</tool_response>`,
+              content: `<tool_response>{"success": false, "error": "${syntaxErrors.join("; ")}"}</tool_response>`,
             });
             continue;
           }
 
-          console.log(`[Tool Call] Executing '${toolName}' with args:`, toolArgs);
+          console.log(`[Tool Call] Executing ${parsedCalls.length} tool(s) in parallel:`, parsedCalls.map(c => c.toolName));
 
-          if (!this.allowedSkills.includes(toolName)) {
-            messages.push({
-              role: "user",
-              content: `<tool_response>{"success": false, "error": "Permission denied: Tool '${toolName}' is not allowed for worker '${this.name}'."}</tool_response>`,
-            });
-            continue;
-          }
+          // Execute all valid tool calls concurrently in parallel
+          const toolResults = await Promise.all(
+            parsedCalls.map(async ({ toolName, toolArgs }) => {
+              if (!this.allowedSkills.includes(toolName)) {
+                return {
+                  toolName,
+                  result: { success: false, error: `Permission denied: Tool '${toolName}' is not allowed for worker '${this.name}'.` },
+                };
+              }
 
-          try {
-            // Execute skill, passing chatId as context metadata
-            const result = await registry.executeSkill(toolName, toolArgs, { chatId });
-            console.log(`[Tool Response] '${toolName}' succeeded.`);
-            
-            if (result && result.success === false && result.error === "NOT_AUTHENTICATED") {
-              return `🔒 **Google Authentication Required**\n\nTo allow me to access your Google account, please authorize access by visiting this link:\n\n👉 [Authorize Google Account](${result.authUrl})\n\nAfter authorizing, return here and run your command again!`;
+              try {
+                const res = await registry.executeSkill(toolName, toolArgs, { chatId });
+                console.log(`[Tool Response] '${toolName}' succeeded.`);
+                return { toolName, result: res };
+              } catch (err: any) {
+                const safeMsg = (err.message || String(err)).replace(/"/g, "'").replace(/\n/g, " ");
+                console.error(`[Tool Error] '${toolName}' failed:`, err.message);
+                return { toolName, result: { success: false, error: safeMsg } };
+              }
+            })
+          );
+
+          // Check if any tool required Google OAuth authorization
+          for (const tr of toolResults) {
+            if (tr.result && tr.result.success === false && tr.result.error === "NOT_AUTHENTICATED") {
+              return `🔒 **Google Authentication Required**\n\nTo allow me to access your Google account, please authorize access by visiting this link:\n\n👉 [Authorize Google Account](${tr.result.authUrl})\n\nAfter authorizing, return here and run your command again!`;
             }
-
-            messages.push({
-              role: "user",
-              content: `<tool_response>${JSON.stringify(result)}</tool_response>`,
-            });
-          } catch (err: any) {
-            const safeMsg = (err.message || String(err)).replace(/"/g, "'").replace(/\n/g, " ");
-            console.error(`[Tool Error] '${toolName}' failed:`, err.message);
-            messages.push({
-              role: "user",
-              content: `<tool_response>{"success": false, "error": "${safeMsg}"}</tool_response>`,
-            });
           }
+
+          // Concatenate responses for ReAct feedback
+          const toolResponsesStr = toolResults
+            .map((tr) => `<tool_response name="${tr.toolName}">${JSON.stringify(tr.result)}</tool_response>`)
+            .join("\n");
+
+          messages.push({
+            role: "user",
+            content: toolResponsesStr,
+          });
         } else {
           // No tool call: ReAct loop has completed and returned the final answer
           const cleanResponse = completion

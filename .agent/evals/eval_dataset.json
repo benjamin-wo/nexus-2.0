@@ -1,0 +1,20 @@
+[
+  {
+    "id": "eval_calc_1",
+    "skill": "calculator",
+    "input": "Calculate (12 + 34) * 2",
+    "expected_contains": "92"
+  },
+  {
+    "id": "eval_weather_1",
+    "skill": "weather",
+    "input": "What is the weather in Singapore?",
+    "expected_contains": "Singapore"
+  },
+  {
+    "id": "eval_reminder_1",
+    "skill": "reminder",
+    "input": "Remind me to buy groceries in 10 minutes",
+    "expected_contains": "buy groceries"
+  }
+]

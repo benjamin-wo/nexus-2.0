@@ -125,6 +125,9 @@ export interface IStorage {
 }
 
 export class StorageService implements IStorage {
+  private static sharedPgPool: pg.Pool | null = null;
+  private static sharedSqliteDb: Database | null = null;
+
   private pgPool: pg.Pool | null = null;
   private sqliteDb: Database | null = null;
   private isPostgres = false;
@@ -133,13 +136,21 @@ export class StorageService implements IStorage {
     const dbUrl = process.env.DATABASE_URL;
     if (dbUrl && dbUrl.trim() !== "") {
       const isLocalhost = dbUrl.includes("localhost") || dbUrl.includes("127.0.0.1");
-      this.pgPool = new pg.Pool({ 
-        connectionString: dbUrl,
-        ...(!isLocalhost && { ssl: { rejectUnauthorized: false } })
-      });
+      if (!StorageService.sharedPgPool) {
+        StorageService.sharedPgPool = new pg.Pool({ 
+          connectionString: dbUrl,
+          ...(!isLocalhost && { ssl: { rejectUnauthorized: false } }),
+          max: 10,
+          idleTimeoutMillis: 30000,
+        });
+      }
+      this.pgPool = StorageService.sharedPgPool;
       this.isPostgres = true;
     } else {
-      this.sqliteDb = new Database("assistant.db");
+      if (!StorageService.sharedSqliteDb) {
+        StorageService.sharedSqliteDb = new Database("assistant.db");
+      }
+      this.sqliteDb = StorageService.sharedSqliteDb;
       this.isPostgres = false;
     }
   }
@@ -527,6 +538,49 @@ export class StorageService implements IStorage {
     } else if (this.sqliteDb) {
       this.sqliteDb.prepare("UPDATE reminders SET due_at = ?, sent = 0 WHERE id = ?").run(dueStr, id);
     }
+  }
+
+  async getUserReminders(chatId: string): Promise<Reminder[]> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT id, chat_id, message, due_at, sent, cron_expression FROM reminders WHERE chat_id = $1 ORDER BY due_at ASC",
+        [chatId]
+      );
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        chatId: row.chat_id,
+        message: row.message,
+        dueAt: new Date(row.due_at),
+        sent: row.sent,
+        cronExpression: row.cron_expression || undefined,
+      }));
+    } else if (this.sqliteDb) {
+      const rows = this.sqliteDb
+        .prepare(
+          "SELECT id, chat_id, message, due_at, sent, cron_expression FROM reminders WHERE chat_id = ? ORDER BY due_at ASC"
+        )
+        .all(chatId) as any[];
+      return rows.map((row) => ({
+        id: row.id,
+        chatId: row.chat_id,
+        message: row.message,
+        dueAt: new Date(row.due_at),
+        sent: row.sent === 1 || row.sent === true,
+        cronExpression: row.cron_expression || undefined,
+      }));
+    }
+    return [];
+  }
+
+  async deleteReminder(id: number): Promise<boolean> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query("DELETE FROM reminders WHERE id = $1", [id]);
+      return (res.rowCount || 0) > 0;
+    } else if (this.sqliteDb) {
+      const info = this.sqliteDb.prepare("DELETE FROM reminders WHERE id = ?").run(id);
+      return info.changes > 0;
+    }
+    return false;
   }
 
   async logEvent(log: LogEntry): Promise<void> {
@@ -1206,4 +1260,16 @@ export class StorageService implements IStorage {
     }
   }
 
+  async close(force = false): Promise<void> {
+    if (force) {
+      if (StorageService.sharedPgPool) {
+        await StorageService.sharedPgPool.end();
+        StorageService.sharedPgPool = null;
+      }
+      if (StorageService.sharedSqliteDb) {
+        StorageService.sharedSqliteDb.close();
+        StorageService.sharedSqliteDb = null;
+      }
+    }
+  }
 }

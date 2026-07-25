@@ -2,6 +2,32 @@ import { Message } from "../database/Storage";
 import { GeminiEmptyResponseError, GeminiApiError } from "./errors";
 import { Logger } from "./Logger";
 
+const circuitBreakers = new Map<string, { failures: number; openUntil: number }>();
+
+function isCircuitOpen(provider: string): boolean {
+  const state = circuitBreakers.get(provider);
+  if (!state) return false;
+  if (Date.now() > state.openUntil) {
+    circuitBreakers.delete(provider);
+    return false;
+  }
+  return true;
+}
+
+function recordFailure(provider: string): void {
+  const state = circuitBreakers.get(provider) || { failures: 0, openUntil: 0 };
+  state.failures += 1;
+  if (state.failures >= 3) {
+    state.openUntil = Date.now() + 5 * 60 * 1000; // 5 minutes
+    Logger.warn(`[CircuitBreaker] Provider '${provider}' tripped after 3 consecutive errors! Bypassing for 5 minutes.`);
+  }
+  circuitBreakers.set(provider, state);
+}
+
+function recordSuccess(provider: string): void {
+  circuitBreakers.delete(provider);
+}
+
 export class LlmService {
   private provider: string;
   private customModel?: string;
@@ -52,15 +78,26 @@ export class LlmService {
   }
 
   private async callGeminiWithFallback(messages: Message[]): Promise<string> {
+    if (isCircuitOpen("gemini")) {
+      Logger.warn("[LlmService] Gemini circuit breaker is OPEN. Bypassing directly to Deepseek...");
+      return this.callDeepseek(messages);
+    }
+
     try {
-      return await this.callGemini(messages);
+      const res = await this.callGemini(messages);
+      recordSuccess("gemini");
+      return res;
     } catch (err: any) {
+      recordFailure("gemini");
       Logger.error(`[LlmService] Gemini API failed after retries: ${err.message}. Attempting fallback...`);
       try {
-        return await this.callDeepseek(messages);
+        const fallbackRes = await this.callDeepseek(messages);
+        recordSuccess("deepseek");
+        return fallbackRes;
       } catch (fallbackErr: any) {
+        recordFailure("deepseek");
         Logger.error(`[LlmService] Fallback to Deepseek also failed: ${fallbackErr.message}`);
-        throw err; // Throw original Gemini error for upstream graceful degradation
+        throw err;
       }
     }
   }

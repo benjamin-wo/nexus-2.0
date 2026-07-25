@@ -157,6 +157,33 @@ async function main() {
       return; 
     }
 
+    if (text === "/reminders" || text === "/list_reminders") {
+      const storage = new StorageService();
+      await storage.initialize();
+      const reminders = await storage.getUserReminders(chatId);
+      await storage.close();
+
+      if (reminders.length === 0) {
+        await ctx.reply("⏰ You have no active or scheduled reminders.", { message_thread_id: threadId });
+        return;
+      }
+
+      const inlineKeyboard: any[] = [];
+      const lines = reminders.map((r) => {
+        const type = r.cronExpression ? `🔄 Cron <code>${escapeHtml(r.cronExpression)}</code>` : `📅 One-shot`;
+        const timeStr = r.dueAt ? r.dueAt.toLocaleString() : "Pending";
+        inlineKeyboard.push([{ text: `❌ Delete: ${r.message.slice(0, 24)}`, callback_data: `action:delete_reminder:${r.id}` }]);
+        return `• [${type}] <b>${escapeHtml(r.message)}</b>\n  ⏱️ Next due: <code>${escapeHtml(timeStr)}</code>`;
+      });
+
+      await ctx.reply(`⏰ <b>Your Active Reminders:</b>\n\n${lines.join("\n\n")}`, {
+        parse_mode: "HTML",
+        message_thread_id: threadId,
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+      return;
+    }
+
     if (text.startsWith("/assign ")) {
       const workerName = text.split(" ")[1]?.trim();
       if (workerName && threadId) {
@@ -487,7 +514,18 @@ Output format MUST be EXACTLY:
        } else {
           await ctx.reply("⚠️ Patch data not found or expired.");
        }
+    } else if (data.startsWith("action:delete_reminder:")) {
+       const reminderId = parseInt(data.replace("action:delete_reminder:", ""));
+       await ctx.answerCallbackQuery({ text: "Deleting reminder..." });
+       const storage = new StorageService();
+       await storage.initialize();
+       const deleted = await storage.deleteReminder(reminderId);
        await storage.close();
+       if (deleted) {
+          await ctx.editMessageText("✅ <b>Reminder deleted successfully.</b>", { parse_mode: "HTML" });
+       } else {
+          await ctx.reply("⚠️ Reminder not found or already deleted.");
+       }
     } else if (data.startsWith("log_yes:")) {
       const pendingId = parseInt(data.split(":")[1]);
       await ctx.answerCallbackQuery({ text: "Logging expense..." });
