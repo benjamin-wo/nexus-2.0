@@ -1,6 +1,6 @@
 ---
 provider: deepseek
-model: deepseek-reasoner
+model: deepseek-v4-pro
 ---
 
 # Product Manager Agent Profile

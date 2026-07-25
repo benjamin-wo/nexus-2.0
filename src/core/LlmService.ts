@@ -191,17 +191,33 @@ export class LlmService {
   }
 
   private async callDeepseek(messages: Message[]): Promise<string> {
-    const model = this.customModel || process.env.DEEPSEEK_MODEL || "deepseek-chat";
+    const model = this.customModel || process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
     if (!this.deepseekKey) {
       throw new Error("DEEPSEEK_API_KEY is not configured in environment variables.");
     }
 
-    return this.callOpenAiCompatible(
-      "https://api.deepseek.com/chat/completions",
-      this.deepseekKey,
-      model,
-      messages
-    );
+    try {
+      return await this.callOpenAiCompatible(
+        "https://api.deepseek.com/chat/completions",
+        this.deepseekKey,
+        model,
+        messages
+      );
+    } catch (err: any) {
+      if (err.message && (err.message.includes("model") || err.message.includes("supported API model"))) {
+        const fallbackModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
+        if (fallbackModel !== model) {
+          Logger.warn(`[LlmService] Model '${model}' rejected by API. Retrying with fallback model '${fallbackModel}'...`);
+          return await this.callOpenAiCompatible(
+            "https://api.deepseek.com/chat/completions",
+            this.deepseekKey,
+            fallbackModel,
+            messages
+          );
+        }
+      }
+      throw err;
+    }
   }
 
   private async callOpenrouter(messages: Message[]): Promise<string> {
