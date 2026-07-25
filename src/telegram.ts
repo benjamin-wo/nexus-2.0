@@ -278,7 +278,7 @@ async function main() {
       }
 
       const scopes = encodeURIComponent("https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite offline_access");
-      const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${scopes}&state=${chatId}`;
+      const authUrl = `https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${scopes}&state=${chatId}`;
 
       await ctx.reply(`🔗 <b>Authorize Microsoft / Outlook Access</b>\n\nClick the button below to grant Nexus access to read your Outlook/Hotmail emails:`, {
         parse_mode: "HTML",
@@ -868,7 +868,7 @@ Output format MUST be EXACTLY:
           const base = webappUrl.endsWith("/") ? webappUrl.slice(0, -1) : webappUrl;
           const redirectUri = `${base}/api/oauth/microsoft/callback`;
 
-          const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+          const tokenRes = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
