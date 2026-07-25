@@ -1402,9 +1402,6 @@ export class StorageService implements IStorage {
     const path = require("path");
     const YAML = require("yaml");
 
-    const skills = await this.getSkills();
-    if (skills.length > 0) return; // Already seeded
-
     const skillsDir = path.join(process.cwd(), ".agent", "skills");
     if (!fs.existsSync(skillsDir)) return;
 
