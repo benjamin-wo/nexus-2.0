@@ -5,8 +5,8 @@ function stripHtml(html: string): string {
 }
 
 export async function execute(args: { action?: "list" | "search"; query?: string }) {
-  const email = process.env.OUTLOOK_EMAIL;
-  const password = process.env.OUTLOOK_APP_PASSWORD;
+  const email = process.env.OUTLOOK_EMAIL?.trim();
+  const password = process.env.OUTLOOK_APP_PASSWORD?.replace(/\s+/g, "").trim();
 
   if (!email || !password) {
     return {
