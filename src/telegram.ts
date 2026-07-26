@@ -75,6 +75,19 @@ async function main() {
   console.log(`[Telegram] Loaded ${registry.getSkills().length} skills.`);
 
   const bot = new Bot(token);
+
+  // Set command menu in Telegram client
+  await bot.api.setMyCommands([
+    { command: "start", description: "Initialize the assistant" },
+    { command: "owed", description: "Who owes you money (receivables)" },
+    { command: "reimbursements", description: "Manage active reimbursements" },
+    { command: "authorize", description: "Connect Gmail account via Google OAuth" },
+    { command: "authorize_outlook", description: "Connect Outlook/Hotmail account via Microsoft OAuth" },
+    { command: "reminders", description: "List and manage active reminders & cron tasks" },
+    { command: "fixingtime", description: "DevOps error log audit & self-healing magic prompt" },
+    { command: "cancel", description: "Stop active background tracking sessions" },
+  ]).catch(err => console.error("[Telegram] Failed to set commands:", err.message));
+
   const orchestrator = new Orchestrator();
   const scheduler = new Scheduler();
   const storage = new StorageService();
