@@ -326,7 +326,17 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
   }
 }
 
-export async function pollEmails(bot?: Bot) {
+export async function pollUserGmail(chatId: string, credentials: GoogleCredentials, bot?: Bot) {
+  const storage = new StorageService();
+  await storage.initialize();
+  try {
+    await processUser(chatId, credentials, storage, bot);
+  } finally {
+    await storage.close();
+  }
+}
+
+export async function pollGmail(bot?: Bot) {
   console.log("[EmailPoller] Starting poll cycle...");
   const storage = new StorageService();
   await storage.initialize();

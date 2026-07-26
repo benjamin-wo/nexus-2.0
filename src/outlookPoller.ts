@@ -89,6 +89,15 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
     console.log(`[OutlookPoller] Found ${messages.length} unread Microsoft emails for chat ${chatId}`);
 
     for (const msg of messages) {
+      if (!msg.id) continue;
+
+      const alreadyProcessed = await storage.isEmailProcessed(msg.id);
+      if (alreadyProcessed) {
+        continue;
+      }
+
+      await storage.markEmailProcessed(msg.id, chatId);
+
       const subject = msg.subject || "No Subject";
       const fromHeader = msg.from?.emailAddress?.address || "Unknown";
       const textBody = stripHtmlTags(msg.body?.content || msg.bodyPreview || "").substring(0, 4000);

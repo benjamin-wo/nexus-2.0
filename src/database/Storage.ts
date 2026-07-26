@@ -135,6 +135,8 @@ export interface IStorage {
   saveGoogleCredentials(chatId: string, credentials: GoogleCredentials): Promise<void>;
   getGoogleCredentials(chatId: string): Promise<GoogleCredentials | null>;
   getAllGoogleCredentials(): Promise<{chatId: string, credentials: GoogleCredentials}[]>;
+  isEmailProcessed(emailId: string): Promise<boolean>;
+  markEmailProcessed(emailId: string, chatId: string): Promise<void>;
   getSkills(): Promise<RuntimeSkill[]>;
   getSkill(name: string): Promise<RuntimeSkill | null>;
   insertSkill(name: string, description: string, paramSchema: any, code: string): Promise<void>;
@@ -281,6 +283,12 @@ export class StorageService implements IStorage {
             access_token TEXT NOT NULL,
             refresh_token TEXT NOT NULL,
             expiry_date BIGINT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS processed_emails (
+            email_id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
 
           CREATE TABLE IF NOT EXISTS runtime_skills (
@@ -444,6 +452,14 @@ export class StorageService implements IStorage {
           access_token TEXT NOT NULL,
           refresh_token TEXT NOT NULL,
           expiry_date INTEGER NOT NULL
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS processed_emails (
+          email_id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
 
@@ -1311,6 +1327,37 @@ export class StorageService implements IStorage {
       }));
     }
     return [];
+  }
+
+  async isEmailProcessed(emailId: string): Promise<boolean> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT email_id FROM processed_emails WHERE email_id = $1",
+        [emailId]
+      );
+      return res.rows.length > 0;
+    } else if (this.sqliteDb) {
+      const row = this.sqliteDb
+        .prepare("SELECT email_id FROM processed_emails WHERE email_id = ?")
+        .get(emailId);
+      return !!row;
+    }
+    return false;
+  }
+
+  async markEmailProcessed(emailId: string, chatId: string): Promise<void> {
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        "INSERT INTO processed_emails (email_id, chat_id) VALUES ($1, $2) ON CONFLICT (email_id) DO NOTHING",
+        [emailId, chatId]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb
+        .prepare(
+          "INSERT OR IGNORE INTO processed_emails (email_id, chat_id) VALUES (?, ?)"
+        )
+        .run(emailId, chatId);
+    }
   }
 
   async close(): Promise<void> {

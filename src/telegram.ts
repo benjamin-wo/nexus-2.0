@@ -936,11 +936,6 @@ Output format MUST be EXACTLY:
   });
 
   console.log(`[Telegram] Web Server started on port ${port}`);
-  
-  // 7. Start the Email Poller background loops (every 15 minutes)
-  startEmailPoller(bot, 15 * 60 * 1000);
-  startOutlookPoller(bot, 15 * 60 * 1000);
-
   console.log("[Telegram] Bot starting...");
   await bot.start();
 }
