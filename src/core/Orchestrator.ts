@@ -100,9 +100,13 @@ export class Orchestrator {
       } else if (existsSync(userPath)) {
         userMemory = `\n\n# User Memory & Preferences\n${await readFile(userPath, "utf-8")}`;
       }
+      const sgtDateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Singapore" });
+      const temporalPrompt = `\n\n# Current Time Context (Asia/Singapore SGT / UTC+8)\n- Current local date and time: ${sgtDateString}\n- All calculations, schedules, and queries should default to Singapore Time (SGT / UTC+8) unless explicitly instructed otherwise.`;
+
       if (existsSync(rulesPath)) {
         agentRules = `\n\n# Formatting Rules & Core Constraints\n${await readFile(rulesPath, "utf-8")}`;
       }
+      agentRules += temporalPrompt;
 
       // Add current message to temporary history for classification
       const tempHistory: Message[] = [
