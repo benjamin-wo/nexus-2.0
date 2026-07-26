@@ -494,7 +494,29 @@ Output format MUST be EXACTLY:
 
     try {
       const threadId = ctx.message.message_thread_id;
-      const response = await orchestrator.processMessage(chatId, text, media, threadId);
+      
+      const storage = new StorageService();
+      await storage.initialize();
+      const activeEditId = await storage.getProfileValue(`ACTIVE_PENDING_EXPENSE_ID_${chatId}`);
+      let processedText = text;
+      
+      if (activeEditId) {
+        const pending = await storage.getPendingExpense(Number(activeEditId));
+        if (pending) {
+          processedText = `[CONTEXT: The user is completing or editing the pending expense ID ${activeEditId}. Currently, the database has:
+- Amount: ${pending.amount || "missing"}
+- Description: "${pending.description || "missing"}"
+- Category: "${pending.category || "missing"}"
+- Payment Mode: "${pending.paymentMode || "missing"}"
+
+The user says: "${text}".
+Please update the missing or changed values and save this expense to the database. After saving, notify the user that the expense has been logged successfully.]\n\n${text}`;
+        }
+        await storage.setProfileValue(`ACTIVE_PENDING_EXPENSE_ID_${chatId}`, null);
+      }
+      await storage.close();
+
+      const response = await orchestrator.processMessage(chatId, processedText, media, threadId);
       await ctx.reply(markdownToHtml(response), { parse_mode: "HTML", message_thread_id: threadId });
     } catch (err: any) {
       const threadId = ctx.message.message_thread_id;
@@ -672,8 +694,18 @@ Output format MUST be EXACTLY:
     } else if (data.startsWith("log_edit:")) {
       const pendingId = parseInt(data.split(":")[1]);
       await ctx.answerCallbackQuery({ text: "Preparing edit..." });
-      // Ask user to use normal chat for now, or you can implement a conversation flow
-      await ctx.reply(`To edit this expense, please type a message to me explaining the changes you want to make, e.g. "Set the amount to $15 for the pending expense at McDonald's".`);
+
+      const storage = new StorageService();
+      await storage.initialize();
+      await storage.setProfileValue(`ACTIVE_PENDING_EXPENSE_ID_${chatId}`, pendingId);
+      
+      const pending = await storage.getPendingExpense(pendingId);
+      const desc = pending?.description || "this receipt";
+      await storage.close();
+
+      await ctx.reply(`✏️ **Editing Expense:** "${desc}"\n\nPlease send me the updated or missing details (e.g. "it was $15.50" or "McDonalds"). I will update and log it!`, {
+        reply_markup: { force_reply: true }
+      });
     }
   });
 
