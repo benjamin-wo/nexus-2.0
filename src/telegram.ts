@@ -83,7 +83,14 @@ async function main() {
   // 2. Start Scheduler (Secretary alert callback routes directly to Telegram Chat ID)
   scheduler.start(async (chatId, message) => {
     try {
-      await bot.api.sendMessage(chatId, markdownToHtml(message), { parse_mode: "HTML" });
+      if (message.startsWith("[TASK]")) {
+        const promptText = message.replace("[TASK]", "").trim();
+        console.log(`[Scheduler] Executing scheduled task for ${chatId}: ${promptText}`);
+        const response = await orchestrator.processMessage(chatId, promptText, undefined);
+        await bot.api.sendMessage(chatId, markdownToHtml(`📋 <b>Scheduled Task Completed:</b>\n\n${response}`), { parse_mode: "HTML" });
+      } else {
+        await bot.api.sendMessage(chatId, markdownToHtml(message), { parse_mode: "HTML" });
+      }
     } catch (err: any) {
       console.error(`[Telegram Scheduler Alert] Failed to send to ${chatId}:`, err.message);
     }

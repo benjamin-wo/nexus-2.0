@@ -1,6 +1,6 @@
 ---
 name: reminder
-description: Schedules a background notification or recurring cron alarm event.
+description: Schedules a background notification or recurring cron alarm event. Can schedule automated tasks/commands.
 parameters:
   type: object
   properties:
@@ -13,7 +13,7 @@ parameters:
     cron:
       type: string
       description: |
-        For recurring reminders using standard 5-field cron syntax: `[minute] [hour] [dayOfMonth] [month] [dayOfWeek]`.
+        For recurring tasks/reminders using standard 5-field cron syntax: `[minute] [hour] [dayOfMonth] [month] [dayOfWeek]`.
         Examples:
         - `0 9 * * *` (every day at 9:00 AM)
         - `0 9 * * 1` (every Monday at 9:00 AM)
@@ -21,10 +21,17 @@ parameters:
         - `*/15 * * * *` (every 15 minutes)
     message:
       type: string
-      description: The reminder alert text content.
+      description: |
+        The text description or prompt.
+        If you want to run an automated command/workflow (e.g., polling email or logging a summary), prefix the message with `[TASK]`.
+        Examples:
+        - `[TASK] pollEmails` (triggers on-demand email polling)
+        - `[TASK] check my Outlook emails`
+        - `Remember to call mom` (regular user reminder)
   required:
     - message
 ---
-Use this tool when users ask to set one-time reminders or recurring cron notifications.
-Must specify either `duration` (for one-off reminders) or `cron` (for recurring reminders).
-Confirm the precise scheduled execution time / frequency with the user.
+Use this tool when users ask to set one-time reminders, recurring alerts, or recurring scheduled tasks (like checking emails).
+- If scheduling a task/action, prefix the `message` with `[TASK]`.
+- Must specify either `duration` (for one-off execution) or `cron` (for recurring execution).
+- Confirm the precise scheduled execution time / frequency with the user.
