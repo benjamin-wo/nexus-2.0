@@ -62,6 +62,18 @@ async function runTests() {
     }
     console.log("✅ Calculator skill verified: (150 + 50) / 4 = 50");
 
+    // Test screenshotPage - the riskiest new dependency (headless Chromium actually
+    // launching in this environment), tested deterministically with no LLM call.
+    console.log("   Testing screenshotPage (headless Chromium render)...");
+    const screenshotResult = await registry.executeSkill("screenshotPage", {
+      htmlContent: "<!DOCTYPE html><html><body><h1>Verification</h1></body></html>",
+    });
+    const pngBytes = Buffer.from(screenshotResult.media?.[0]?.data || "", "base64");
+    if (pngBytes.length < 8 || pngBytes[0] !== 0x89 || pngBytes[1] !== 0x50 || pngBytes[2] !== 0x4e || pngBytes[3] !== 0x47) {
+      throw new Error("screenshotPage did not return a valid PNG.");
+    }
+    console.log(`✅ screenshotPage verified: rendered a valid ${pngBytes.length}-byte PNG.`);
+
     // Test FileOps
     console.log("   Testing FileOps write/read...");
     const testFile = "temp_test_verification.txt";

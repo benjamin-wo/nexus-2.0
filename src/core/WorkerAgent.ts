@@ -1,4 +1,4 @@
-import { Message } from "../database/Storage";
+import { Message, MediaAttachment } from "../database/Storage";
 import { LlmService } from "./LlmService";
 import { GeminiEmptyResponseError, GeminiApiError } from "./errors";
 import { SkillRegistry } from "./SkillRegistry";
@@ -8,6 +8,7 @@ export class WorkerAgent {
   private systemPrompt: string;
   private allowedSkills: string[];
   private llmService: LlmService;
+  private maxTurns: number;
 
   constructor(name: string, systemPrompt: string, allowedSkills: string[]) {
     this.name = name;
@@ -16,15 +17,19 @@ export class WorkerAgent {
     
     let customProvider: string | undefined;
     let customModel: string | undefined;
+    let customMaxTurns: number | undefined;
     const frontmatterMatch = systemPrompt.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (frontmatterMatch) {
       const frontmatter = frontmatterMatch[1];
       const providerMatch = frontmatter.match(/^provider:\s*([^\r\n]+)/m);
       const modelMatch = frontmatter.match(/^model:\s*([^\r\n]+)/m);
+      const maxTurnsMatch = frontmatter.match(/^maxTurns:\s*(\d+)/m);
       if (providerMatch) customProvider = providerMatch[1].trim();
       if (modelMatch) customModel = modelMatch[1].trim();
+      if (maxTurnsMatch) customMaxTurns = parseInt(maxTurnsMatch[1], 10);
     }
     this.llmService = new LlmService(customProvider, customModel);
+    this.maxTurns = customMaxTurns && customMaxTurns > 0 ? customMaxTurns : 5;
   }
 
   async execute(chatHistory: Message[], chatId: string): Promise<string> {
@@ -82,7 +87,7 @@ Format requirements:
       ];
 
       let turns = 0;
-      const maxTurns = 5;
+      const maxTurns = this.maxTurns;
 
       while (turns < maxTurns) {
         turns++;
@@ -177,14 +182,26 @@ Format requirements:
             }
           }
 
-          // Concatenate responses for ReAct feedback
+          // Collect any media (e.g. a screenshotPage PNG) returned by a tool, and strip the
+          // base64 payload out of the visible tool_response text so it isn't duplicated -
+          // it gets attached separately below as this turn's `media`, which LlmService
+          // already scans for and auto-routes to a vision-capable model.
+          const collectedMedia: MediaAttachment[] = [];
           const toolResponsesStr = toolResults
-            .map((tr) => `<tool_response name="${tr.toolName}">${JSON.stringify(tr.result)}</tool_response>`)
+            .map((tr) => {
+              let resultForText: any = tr.result;
+              if (tr.result && Array.isArray(tr.result.media) && tr.result.media.length > 0) {
+                collectedMedia.push(...tr.result.media);
+                resultForText = { ...tr.result, media: `[${tr.result.media.length} image(s) attached]` };
+              }
+              return `<tool_response name="${tr.toolName}">${JSON.stringify(resultForText)}</tool_response>`;
+            })
             .join("\n");
 
           messages.push({
             role: "user",
             content: toolResponsesStr,
+            ...(collectedMedia.length > 0 ? { media: collectedMedia } : {}),
           });
         } else {
           // No tool call: ReAct loop has completed and returned the final answer
@@ -198,7 +215,7 @@ Format requirements:
         }
       }
 
-      return "⚠️ I reached my maximum reasoning steps (5 turns) without resolving the query. Please refine your request or check logs.";
+      return `⚠️ I reached my maximum reasoning steps (${maxTurns} turns) without resolving the query. Please refine your request or check logs.`;
     } catch (error: any) {
       console.error(`[WorkerAgent:${this.name}] Execution crashed:`, error);
        
