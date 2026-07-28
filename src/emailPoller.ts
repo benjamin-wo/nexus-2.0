@@ -177,7 +177,7 @@ ${content}
   }
 }
 
-async function processUser(chatId: string, credentials: GoogleCredentials, storage: StorageService, bot?: Bot) {
+async function processUser(chatId: string, credentials: GoogleCredentials, storage: StorageService, bot?: Bot, customQuery?: string) {
   try {
     const accessToken = await refreshGoogleToken(credentials, chatId, storage);
     const labelId = await getOrCreateLabel(accessToken);
@@ -187,7 +187,12 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
     const yesterday = new Date(Date.now() - 86400000 + (8 * 3600000));
     const yStr = `${yesterday.getFullYear()}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getDate().toString().padStart(2, '0')}`;
     
-    const queryStr = `is:unread -label:${LABEL_NAME} after:${yStr} ((from:alerts@citibank.com.sg) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (from:dbs.com "PayNow") OR (from:dbs.com "Received") OR (subject:"PayLah") OR (subject:"PayNow") OR (subject:"Received") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com) OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk) OR (from:ibanking.alert@dbs.com) OR (from:dbsalert@dbs.com))`;
+    let queryStr = `is:unread -label:${LABEL_NAME} after:${yStr}`;
+    if (customQuery && customQuery.trim().length > 0) {
+      queryStr += ` (${customQuery.trim()})`;
+    } else {
+      queryStr += ` ((from:alerts@citibank.com.sg) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (from:dbs.com "PayNow") OR (from:dbs.com "Received") OR (subject:"PayLah") OR (subject:"PayNow") OR (subject:"Received") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com) OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk) OR (from:ibanking.alert@dbs.com) OR (from:dbsalert@dbs.com))`;
+    }
     const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=5`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -326,45 +331,12 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
   }
 }
 
-export async function pollUserGmail(chatId: string, credentials: GoogleCredentials, bot?: Bot) {
+export async function pollUserGmail(chatId: string, credentials: GoogleCredentials, bot?: Bot, customQuery?: string) {
   const storage = new StorageService();
   await storage.initialize();
   try {
-    await processUser(chatId, credentials, storage, bot);
+    await processUser(chatId, credentials, storage, bot, customQuery);
   } finally {
     await storage.close();
   }
-}
-
-export async function pollGmail(bot?: Bot) {
-  console.log("[EmailPoller] Starting poll cycle...");
-  const storage = new StorageService();
-  await storage.initialize();
-
-  const allCreds = await storage.getAllGoogleCredentials();
-  console.log(`[EmailPoller] Found ${allCreds.length} users with Google Credentials.`);
-
-  for (const { chatId, credentials } of allCreds) {
-    await processUser(chatId, credentials, storage, bot);
-  }
-
-  await storage.close();
-  console.log("[EmailPoller] Cycle complete.");
-}
-
-export function startEmailPoller(bot?: Bot, intervalMs: number = 15 * 60 * 1000) {
-  console.log(`[EmailPoller] Initialized to run every ${intervalMs / 60000} minutes.`);
-  
-  // Run once immediately
-  pollEmails(bot).catch(console.error);
-
-  // Set up the interval
-  setInterval(() => {
-    pollEmails(bot).catch(console.error);
-  }, intervalMs);
-}
-
-// If run directly from CLI (e.g., bun run src/emailPoller.ts)
-if (import.meta.main) {
-  pollEmails().catch(console.error);
 }

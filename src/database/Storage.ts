@@ -116,6 +116,7 @@ export interface IStorage {
   getRecentLogs(limit?: number): Promise<any[]>;
   getLogsPastHours(hours: number): Promise<any[]>;
   markLogsResolved(ids: number[]): Promise<void>;
+  pruneLogs(olderThanDays?: number): Promise<void>;
   createTask(task: TaskEntry): Promise<void>;
   updateTaskStatus(taskId: string, status: TaskEntry["status"]): Promise<void>;
   getTask(taskId: string): Promise<TaskEntry | null>;
@@ -177,6 +178,7 @@ export class StorageService implements IStorage {
     } else {
       if (!StorageService.sharedSqliteDb) {
         StorageService.sharedSqliteDb = new Database("assistant.db");
+        StorageService.sharedSqliteDb.exec("PRAGMA journal_mode = WAL;");
       }
       this.sqliteDb = StorageService.sharedSqliteDb;
       this.isPostgres = false;
@@ -534,6 +536,13 @@ export class StorageService implements IStorage {
   }
 
   async getHistory(chatId: string, limit = 50): Promise<Message[]> {
+    const truncateMsg = (text: string) => {
+      if (text && text.length > 3000) {
+        return text.substring(0, 3000) + "\n\n[... Truncated for token optimization ...]";
+      }
+      return text;
+    };
+
     if (this.isPostgres && this.pgPool) {
       const res = await this.pgPool.query(
         "SELECT role, content, subagent, created_at FROM conversations WHERE chat_id = $1 ORDER BY id DESC LIMIT $2",
@@ -542,7 +551,7 @@ export class StorageService implements IStorage {
       return res.rows
         .map((row: any) => ({
           role: row.role as Message["role"],
-          content: row.content,
+          content: truncateMsg(row.content),
           subagent: row.subagent || undefined,
           createdAt: new Date(row.created_at),
         }))
@@ -556,7 +565,7 @@ export class StorageService implements IStorage {
       return rows
         .map((row) => ({
           role: row.role as Message["role"],
-          content: row.content,
+          content: truncateMsg(row.content),
           subagent: row.subagent || undefined,
           createdAt: new Date(row.created_at),
         }))
@@ -780,6 +789,21 @@ export class StorageService implements IStorage {
       this.sqliteDb.run(
         `UPDATE logs SET resolved = 1 WHERE id IN (${placeholders})`,
         ids
+      );
+    }
+  async pruneLogs(olderThanDays = 30): Promise<void> {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    const cutoffStr = cutoff.toISOString();
+    
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        "DELETE FROM logs WHERE created_at < $1",
+        [cutoff]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb.run(
+        "DELETE FROM logs WHERE created_at < ?",
+        [cutoffStr]
       );
     }
   }

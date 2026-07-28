@@ -6,15 +6,15 @@
     "expected_contains": "92"
   },
   {
-    "id": "eval_weather_1",
-    "skill": "weather",
-    "input": "What is the weather in Singapore?",
+    "id": "eval_search_1",
+    "skill": "webSearch",
+    "input": "Search for the current weather in Singapore",
     "expected_contains": "Singapore"
   },
   {
-    "id": "eval_reminder_1",
-    "skill": "reminder",
-    "input": "Remind me to buy groceries in 10 minutes",
+    "id": "eval_schedule_1",
+    "skill": "schedule",
+    "input": "Schedule a reminder in 10 minutes to buy groceries",
     "expected_contains": "buy groceries"
   }
 ]

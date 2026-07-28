@@ -29,7 +29,7 @@ export class WorkerAgent {
       if (maxTurnsMatch) customMaxTurns = parseInt(maxTurnsMatch[1], 10);
     }
     this.llmService = new LlmService(customProvider, customModel);
-    this.maxTurns = customMaxTurns && customMaxTurns > 0 ? customMaxTurns : 5;
+    this.maxTurns = customMaxTurns && customMaxTurns > 0 ? customMaxTurns : 8;
   }
 
   async execute(chatHistory: Message[], chatId: string): Promise<string> {

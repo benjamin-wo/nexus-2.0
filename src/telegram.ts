@@ -4,9 +4,8 @@ import { SkillRegistry } from "./core/SkillRegistry";
 import { Scheduler } from "./services/Scheduler";
 import { TaskRegistry } from "./core/TaskRegistry";
 import { StorageService } from "./database/Storage";
+import { LlmService } from "./core/LlmService";
 import { join } from "path";
-import { startEmailPoller } from "./emailPoller";
-import { startOutlookPoller } from "./outlookPoller";
 
 function escapeHtml(text: string): string {
   return text
@@ -60,6 +59,32 @@ function markdownToHtml(markdown: string): string {
   return html;
 }
 
+async function replySafe(ctx: any, text: string, options: any = {}) {
+  const html = markdownToHtml(text);
+  try {
+    return await ctx.reply(html, { parse_mode: "HTML", ...options });
+  } catch (err: any) {
+    if (err.message && (err.message.includes("can't parse entities") || err.message.includes("XML"))) {
+      console.warn("[Telegram] HTML parsing failed, falling back to plain text:", err.message);
+      return await ctx.reply(text, { ...options, parse_mode: undefined });
+    }
+    throw err;
+  }
+}
+
+async function sendMessageSafe(bot: Bot, chatId: string, text: string, options: any = {}) {
+  const html = markdownToHtml(text);
+  try {
+    return await bot.api.sendMessage(chatId, html, { parse_mode: "HTML", ...options });
+  } catch (err: any) {
+    if (err.message && (err.message.includes("can't parse entities") || err.message.includes("XML"))) {
+      console.warn("[Telegram] HTML parsing failed, falling back to plain text:", err.message);
+      return await bot.api.sendMessage(chatId, text, { ...options, parse_mode: undefined });
+    }
+    throw err;
+  }
+}
+
 async function main() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
@@ -100,9 +125,9 @@ async function main() {
         const promptText = message.replace("[TASK]", "").trim();
         console.log(`[Scheduler] Executing scheduled task for ${chatId}: ${promptText}`);
         const response = await orchestrator.processMessage(chatId, promptText, undefined);
-        await bot.api.sendMessage(chatId, markdownToHtml(`📋 <b>Scheduled Task Completed:</b>\n\n${response}`), { parse_mode: "HTML" });
+        await sendMessageSafe(bot, chatId, `📋 <b>Scheduled Task Completed:</b>\n\n${response}`);
       } else {
-        await bot.api.sendMessage(chatId, markdownToHtml(message), { parse_mode: "HTML" });
+        await sendMessageSafe(bot, chatId, message);
       }
     } catch (err: any) {
       console.error(`[Telegram Scheduler Alert] Failed to send to ${chatId}:`, err.message);
@@ -121,7 +146,7 @@ async function main() {
         } else {
           text = `❌ **Task Failed!**\nTask ID: \`${taskId}\`\nDescription: ${description}\n\n*Error:*\n${resultOrError}`;
         }
-        await bot.api.sendMessage(chatId, markdownToHtml(text), { parse_mode: "HTML" });
+        await sendMessageSafe(bot, chatId, text);
       } catch (err: any) {
         console.error(`[Telegram Task Callback] Failed to alert ${chatId}:`, err.message);
       }
@@ -131,7 +156,7 @@ async function main() {
   // Register mid-task update callback (used by polling tasks like trackBus to push live messages)
   TaskRegistry.getInstance().setUpdateCallback(async (chatId, message) => {
     try {
-      await bot.api.sendMessage(chatId, markdownToHtml(message), { parse_mode: "HTML" });
+      await sendMessageSafe(bot, chatId, message);
     } catch (err: any) {
       console.error(`[Telegram Task Update] Failed to send live update to ${chatId}:`, err.message);
     }
@@ -232,19 +257,6 @@ async function main() {
       return;
     }
 
-    if (text.startsWith("/assign ")) {
-      const workerName = text.split(" ")[1]?.trim();
-      if (workerName && threadId) {
-        const storage = new StorageService();
-        await storage.initialize();
-        await storage.setThreadAssignment(threadId, workerName);
-        await storage.close();
-        await ctx.reply(`✅ Thread mapped to worker: <code>${workerName}</code>.`, { parse_mode: "HTML", message_thread_id: threadId });
-      } else {
-        await ctx.reply(`⚠️ Usage: /assign [worker_name] (must be inside a topic)`, { message_thread_id: threadId });
-      }
-      return;
-    }
 
     if (text === "/set_devops_thread") {
       if (threadId) {
@@ -352,24 +364,10 @@ Output format MUST be EXACTLY:
 3. **The Magic Prompt** (Put the actual prompt text inside a standard markdown code block so the user can click to copy it)
 `;
 
-        const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [{ role: "user", content: promptText }],
-            temperature: 0.3
-          })
-        });
+        const llm = new LlmService();
+        const llmReply = await llm.generateResponse([{ role: "user", content: promptText }]);
 
-        if (!response.ok) throw new Error("DeepSeek API failed");
-        const data = await response.json();
-        const llmReply = data.choices[0].message.content;
-
-        await ctx.reply(markdownToHtml(llmReply), { parse_mode: "HTML" });
+        await replySafe(ctx, llmReply);
 
         // Mark logs as resolved so they don't appear in future /fixingtime calls
         const logIds = logs.map(l => l.id);
@@ -517,7 +515,7 @@ Please update the missing or changed values and save this expense to the databas
       await storage.close();
 
       const response = await orchestrator.processMessage(chatId, processedText, media, threadId);
-      await ctx.reply(markdownToHtml(response), { parse_mode: "HTML", message_thread_id: threadId });
+      await replySafe(ctx, response, { message_thread_id: threadId });
     } catch (err: any) {
       const threadId = ctx.message.message_thread_id;
       console.error(`[Telegram Message Error] Chat: ${chatId}`, err);
@@ -532,7 +530,7 @@ Please update the missing or changed values and save this expense to the databas
          const payload = `🚨 **Crash Detected in ${workerName}**\n\n**Input:** ${lastInput}\n\n**Trace:**\n<code>${escapeHtml(stackTrace.substring(0, 500))}...</code>`;
          
          if (devopsThreadId) {
-             await bot.api.sendMessage(chatId, markdownToHtml(payload), {
+             await sendMessageSafe(bot, chatId, payload, {
                  parse_mode: "HTML",
                  message_thread_id: Number(devopsThreadId),
                  reply_markup: {
@@ -560,7 +558,7 @@ Please update the missing or changed values and save this expense to the databas
          await storage.close();
          
          if (pmThreadId && pmThreadId !== devopsThreadId) {
-             await bot.api.sendMessage(chatId, markdownToHtml(`🚨 **Bug Report (Crash):**\n\nWorker: ${workerName}\nInput: ${lastInput}\n\nTrace:\n<code>${escapeHtml(stackTrace.substring(0, 500))}...</code>`), {
+             await sendMessageSafe(bot, chatId, `🚨 **Bug Report (Crash):**\n\nWorker: ${workerName}\nInput: ${lastInput}\n\nTrace:\n<code>${escapeHtml(stackTrace.substring(0, 500))}...</code>`, {
                  parse_mode: "HTML",
                  message_thread_id: Number(pmThreadId)
              });
@@ -727,8 +725,7 @@ Please update the missing or changed values and save this expense to the databas
           // Attempt to extract chatId from ctx, default to log failure if unavailable
           const chatId = err.ctx.chat?.id;
           if (chatId) {
-              await bot.api.sendMessage(chatId, markdownToHtml(`🚨 **Global Bot Error:**\n\nMessage: ${errorObj.message}\n\nTrace:\n<code>${escapeHtml((errorObj.stack || "").substring(0, 500))}...</code>`), {
-                  parse_mode: "HTML",
+              await sendMessageSafe(bot, chatId, `🚨 **Global Bot Error:**\n\nMessage: ${errorObj.message}\n\nTrace:\n<code>${escapeHtml((errorObj.stack || "").substring(0, 500))}...</code>`, {
                   message_thread_id: Number(pmThreadId)
               });
           }

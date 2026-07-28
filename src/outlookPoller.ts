@@ -49,7 +49,7 @@ async function refreshMicrosoftToken(chatId: string, refreshToken: string, stora
   }
 }
 
-export async function pollUserOutlook(chatId: string, creds: MicrosoftCredentials, bot?: Bot) {
+export async function pollUserOutlook(chatId: string, creds: MicrosoftCredentials, bot?: Bot, customQuery?: string) {
   const storage = new StorageService();
   await storage.initialize();
 
@@ -68,8 +68,13 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
     }
 
     // Fetch unread messages from Microsoft Graph API
+    let graphUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=isRead eq false&$top=5&$select=id,subject,from,body,bodyPreview,createdDateTime";
+    if (customQuery && customQuery.trim().length > 0) {
+      graphUrl += `&$search="${customQuery.trim()}"`;
+    }
+
     const graphRes = await fetch(
-      "https://graph.microsoft.com/v1.0/me/messages?$filter=isRead eq false&$top=5&$select=id,subject,from,body,bodyPreview,createdDateTime",
+      graphUrl,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
       }
@@ -202,32 +207,3 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
   }
 }
 
-export async function pollOutlook(bot?: Bot) {
-  console.log("[OutlookPoller] Starting poll cycle...");
-  const storage = new StorageService();
-  await storage.initialize();
-
-  try {
-    const userCreds = await storage.getAllMicrosoftCredentials();
-    if (userCreds.length === 0) {
-      return;
-    }
-
-    console.log(`[OutlookPoller] Found ${userCreds.length} users with Microsoft Credentials.`);
-    for (const { chatId, credentials } of userCreds) {
-      await pollUserOutlook(chatId, credentials, bot);
-    }
-  } catch (err: any) {
-    console.error("[OutlookPoller] Error in poll cycle:", err.message);
-  } finally {
-    await storage.close();
-  }
-}
-
-export function startOutlookPoller(bot?: Bot, intervalMs: number = 15 * 60 * 1000) {
-  console.log(`[OutlookPoller] Initialized to run every ${intervalMs / 60000} minutes.`);
-  pollOutlook(bot).catch((err) => console.error("[OutlookPoller] Initial poll failed:", err));
-  setInterval(() => {
-    pollOutlook(bot).catch((err) => console.error("[OutlookPoller] Scheduled poll failed:", err));
-  }, intervalMs);
-}

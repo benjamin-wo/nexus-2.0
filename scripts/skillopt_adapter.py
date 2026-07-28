@@ -59,8 +59,8 @@ def generate_skillopt_benchmark(eval_file=".agent/evals/eval_dataset.json", outp
                 "expected_contains": "70"
             },
             {
-                "id": "eval_weather_1",
-                "skill": "weather",
+                "id": "eval_search_1",
+                "skill": "webSearch",
                 "input": "What's the weather in Tokyo?",
                 "expected_contains": "Tokyo"
             }

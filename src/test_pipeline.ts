@@ -38,7 +38,7 @@ async function runTests() {
       console.log(`   - [${s.name}]: ${s.description.substring(0, 50)}...`);
     });
 
-    const expectedSkills = ["calculator", "fileOps", "weather", "webScraper", "reminder", "createSkill"];
+    const expectedSkills = ["calculator", "fileOps", "webSearch", "schedule", "createSkill", "webPage", "email", "maps", "expenses", "notes", "sysAdmin"];
     for (const exp of expectedSkills) {
       if (!registry.getSkill(exp)) {
         throw new Error(`Critical skill '${exp}' failed to load into registry.`);
@@ -46,11 +46,11 @@ async function runTests() {
     }
     console.log("✅ All required core skills are successfully loaded.");
 
-    const frontendDesignSkill = registry.getSkill("frontend-design");
-    if (!frontendDesignSkill || !frontendDesignSkill.instructions || frontendDesignSkill.instructions.length === 0) {
-      throw new Error("'frontend-design' skill loaded with empty instructions - the SKILL.md guidance pipeline is broken.");
+    const webPageSkill = registry.getSkill("webPage");
+    if (!webPageSkill || !webPageSkill.instructions || webPageSkill.instructions.length === 0) {
+      throw new Error("'webPage' skill loaded with empty instructions - the SKILL.md guidance pipeline is broken.");
     }
-    console.log(`✅ Skill instructions pipeline verified: 'frontend-design' carries ${frontendDesignSkill.instructions.length} chars of guidance.`);
+    console.log(`✅ Skill instructions pipeline verified: 'webPage' carries ${webPageSkill.instructions.length} chars of guidance.`);
 
     // 3. Test Skill Handlers directly
     console.log("\n3. Testing Local Skill Execution...");

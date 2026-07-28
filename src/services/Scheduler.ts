@@ -28,10 +28,14 @@ export class Scheduler {
     try {
       const { WorkerAgent } = require("../core/WorkerAgent");
       const { StorageService } = require("../database/Storage");
+      const { SkillRegistry } = require("../core/SkillRegistry");
+      const { join } = require("path");
+      const { readFileSync, existsSync } = require("fs");
+
       const storage = new StorageService();
       await storage.initialize();
 
-      const prompt = `🚨 A crash was detected in worker '${workerName}'.
+      const prompt = `🚨 A crash was detected in execution loop: '${workerName}'.
 Please analyze the recent crash logs in episodic memory and propose a patch for any broken skills.
 When you output the final patched code, put it in a JSON block like:
 \`\`\`json
@@ -44,24 +48,40 @@ When you output the final patched code, put it in a JSON block like:
 \`\`\`
 Do not apply the patch directly, just output it.`;
 
-      const { join } = require("path");
-      const { readFileSync, existsSync } = require("fs");
-      const workerPath = join(process.cwd(), ".agent", "agents", "devops.md");
-      if (!existsSync(workerPath)) {
-         throw new Error("devops.md profile not found");
-      }
-      const workerMd = readFileSync(workerPath, "utf-8");
-      
-      const skillsSection = workerMd.match(/## Available Skills\r?\n([\s\S]*?)(?:\r?\n##|$)/i);
-      const allowedSkills: string[] = [];
-      if (skillsSection) {
-         for (const line of skillsSection[1].split("\n")) {
-            const m = line.match(/^[-*]\s+`?([a-zA-Z0-9_]+)`?/);
-            if (m) allowedSkills.push(m[1].trim());
-         }
-      }
+      const soulPath = join(process.cwd(), ".agent", "soul.md");
+      const userPath = join(process.cwd(), ".agent", "user.md");
+      const behaviorPath = join(process.cwd(), ".agent", "behavior.md");
+      const rulesPath = join(process.cwd(), ".agents", "AGENTS.md");
+      let soulPrompt = "";
+      let behaviorPrompt = "";
+      let userMemory = "";
+      let agentRules = "";
 
-      const worker = new WorkerAgent("devops", workerMd, allowedSkills);
+      if (existsSync(soulPath)) {
+        soulPrompt = `\n\n# Your Personality & Tone (Soul)\n${readFileSync(soulPath, "utf-8")}`;
+      }
+      if (existsSync(behaviorPath)) {
+        behaviorPrompt = `\n\n# Global Behavior Guidelines & Core Constraints\n${readFileSync(behaviorPath, "utf-8")}`;
+      }
+      const dbProfile = await storage.getUserProfile(chatId);
+      if (dbProfile) {
+        userMemory = `\n\n# User Memory & Preferences (PostgreSQL)\n${dbProfile}`;
+      } else if (existsSync(userPath)) {
+        userMemory = `\n\n# User Memory & Preferences\n${readFileSync(userPath, "utf-8")}`;
+      }
+      const sgtDateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Singapore" });
+      const temporalPrompt = `\n\n# Current Time Context (Asia/Singapore SGT / UTC+8)\n- Current local date and time: ${sgtDateString}\n- All calculations, schedules, and queries should default to Singapore Time (SGT / UTC+8) unless explicitly instructed otherwise.`;
+
+      if (existsSync(rulesPath)) {
+        agentRules = `\n\n# Formatting Rules & Core Constraints\n${readFileSync(rulesPath, "utf-8")}`;
+      }
+      agentRules += temporalPrompt;
+
+      const flatInstructions = `You are Nexus, a personal AI coding assistant and developer/system administrator agent.${soulPrompt}${behaviorPrompt}${userMemory}${agentRules}`;
+
+      const allowedSkills = SkillRegistry.getInstance().getSkills().map((s: any) => s.name);
+
+      const worker = new WorkerAgent("nexus", flatInstructions, allowedSkills);
       const response = await worker.execute([{ role: "user", content: prompt, timestamp: Date.now() }], chatId);
       
       const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/i);
@@ -98,6 +118,21 @@ Do not apply the patch directly, just output it.`;
     this.isRunning = true;
     try {
       await this.processReminders();
+      
+      // Auto-prune logs once per hour
+      if (new Date().getMinutes() === 0) {
+        const { StorageService } = require("../database/Storage");
+        const storage = new StorageService();
+        await storage.initialize();
+        try {
+          await storage.pruneLogs(30);
+          console.log("[Scheduler] Database logs pruned successfully (older than 30 days).");
+        } catch (pruneErr: any) {
+          console.error("[Scheduler] Failed to prune logs:", pruneErr.message);
+        } finally {
+          await storage.close();
+        }
+      }
     } catch (error) {
       console.error("[Scheduler] Maintenance error:", error);
     } finally {

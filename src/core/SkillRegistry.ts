@@ -51,10 +51,21 @@ export class SkillRegistry {
         const instructions = skill.instructions;
 
         // Write to cache file because Bun's import() rejects long data URIs with NameTooLong
-        const { writeFileSync, mkdirSync } = await import("fs");
+        const { writeFileSync, mkdirSync, readdirSync, unlinkSync } = await import("fs");
         const { join } = await import("path");
         const cacheDir = join(process.cwd(), ".agent", "cache");
         try { mkdirSync(cacheDir, { recursive: true }); } catch (e) {}
+
+        // Prune older transpiled files for this skill to prevent directory bloat
+        try {
+          const files = readdirSync(cacheDir);
+          for (const file of files) {
+            if (file.startsWith(`${name}_`) && file.endsWith(".js")) {
+              unlinkSync(join(cacheDir, file));
+            }
+          }
+        } catch (_) {}
+
         const tmpFile = join(cacheDir, `${name}_${Date.now()}.js`);
         
         // Fix relative paths for the new location (.agent/cache is 2 levels deep, not 3)

@@ -5,6 +5,7 @@ import { StorageService, Message, MediaAttachment } from "../database/Storage";
 import { LlmService } from "./LlmService";
 import { WorkerAgent } from "./WorkerAgent";
 import { TaskRegistry } from "./TaskRegistry";
+import { SkillRegistry } from "./SkillRegistry";
 import { GeminiEmptyResponseError, GeminiApiError } from "./errors";
 import { Logger } from "./Logger";
 
@@ -72,7 +73,7 @@ export class Orchestrator {
       const busCodeMatch = userText.match(/^(?:bus|buses|bus\s+arrival|bus\s+timings?)(?:\s+at|\s+stop)?\s+(\d{5})$/i);
       if (busCodeMatch) {
         try {
-          const busRes = await SkillRegistry.getInstance().executeSkill("ltaDataMall", { action: "getBusArrivals", busStopId: busCodeMatch[1] });
+          const busRes = await SkillRegistry.getInstance().executeSkill("maps", { action: "getBusArrivals", busStopId: busCodeMatch[1] });
           if (busRes.success && busRes.services) {
             const stopName = busRes.stopName ? `${busRes.stopName}, ${busRes.roadName}` : busRes.busStopCode;
             const lines = busRes.services.map((s: any) => `• Bus **${s.serviceNo}**: ${s.nextBus || "—"}${s.nextBus2 ? ` · ${s.nextBus2}` : ""}`);
@@ -81,18 +82,23 @@ export class Orchestrator {
         } catch (_) { /* fallback to worker agent */ }
       }
 
-      // 2. Fetch Chat History and personality/user context
+      // 2. Fetch Chat History and personality/user/behavior context
       const history = await storage.getHistory(chatId, 15);
       
       const soulPath = join(process.cwd(), ".agent", "soul.md");
       const userPath = join(process.cwd(), ".agent", "user.md");
+      const behaviorPath = join(process.cwd(), ".agent", "behavior.md");
       const rulesPath = join(process.cwd(), ".agents", "AGENTS.md");
       let soulPrompt = "";
+      let behaviorPrompt = "";
       let userMemory = "";
       let agentRules = "";
 
       if (existsSync(soulPath)) {
         soulPrompt = `\n\n# Your Personality & Tone (Soul)\n${await readFile(soulPath, "utf-8")}`;
+      }
+      if (existsSync(behaviorPath)) {
+        behaviorPrompt = `\n\n# Global Behavior Guidelines & Core Constraints\n${await readFile(behaviorPath, "utf-8")}`;
       }
       const dbProfile = await storage.getUserProfile(chatId);
       if (dbProfile) {
@@ -108,74 +114,14 @@ export class Orchestrator {
       }
       agentRules += temporalPrompt;
 
-      // Add current message to temporary history for classification
-      const tempHistory: Message[] = [
-        ...history,
-        { role: "user", content: userText, media },
-      ];
+      const flatInstructions = `You are Nexus, a personal AI coding assistant and developer/system administrator agent.${soulPrompt}${behaviorPrompt}${userMemory}${agentRules}`;
 
-      // 3. Evaluate Thread Context Routing Matrix
-      let workerName: string | null = null;
-      if (threadId) {
-        workerName = await storage.getThreadAssignment(threadId);
-      }
+      // 3. Spawning the Flat Agent with all available skills
+      const allowedSkills = SkillRegistry.getInstance().getSkills().map((s) => s.name);
+      Logger.info(`[Orchestrator] Spawning flat agent with ${allowedSkills.length} skills:`, allowedSkills);
 
-      if (workerName) {
-        console.log(`[Orchestrator] Bypassing classification, routing to assigned worker: ${workerName}`);
-      } else {
-        // Fallback to LLM Classification Master Router
-        const routerPath = join(process.cwd(), ".agent", "orchestrator.md");
-        if (!existsSync(routerPath)) {
-          throw new Error("Orchestrator instruction profile (.agent/orchestrator.md) is missing.");
-        }
-        const routerInstructions = await readFile(routerPath, "utf-8");
-        const routerInstructionsWithContext = `${routerInstructions}${soulPrompt}${userMemory}${agentRules}`;
-
-        const classificationMessages: Message[] = [
-          { role: "system", content: routerInstructionsWithContext },
-          ...tempHistory,
-        ];
-
-        console.log("[Orchestrator] Routing user request...");
-        const routeResponse = await this.llmService.generateResponse(classificationMessages);
-        const spawnMatch = routeResponse.match(/<spawn>([a-zA-Z0-9]+)<\/spawn>/i);
-
-        if (spawnMatch) {
-          workerName = spawnMatch[1];
-        } else {
-          finalResponse = routeResponse.replace(/<spawn>.*?<\/spawn>/gi, "").trim();
-        }
-      }
-
-      if (workerName) {
-        console.log(`[Orchestrator] Spawning worker: ${workerName}`);
-
-        // 4. Load Worker Profile and allowed skills
-        const workerPath = join(process.cwd(), ".agent", "agents", `${workerName}.md`);
-        if (!existsSync(workerPath)) {
-          throw new Error(`Worker profile '${workerName}' (.agent/agents/${workerName}.md) is missing.`);
-        }
-        const workerMd = await readFile(workerPath, "utf-8");
-
-        const skillsSection = workerMd.match(/## Available Skills\r?\n([\s\S]*?)(?:\r?\n##|$)/i);
-        const allowedSkills: string[] = [];
-        if (skillsSection) {
-          const lines = skillsSection[1].split("\n");
-          for (const line of lines) {
-            const skillMatch = line.match(/^[-*]\s+`?([a-zA-Z0-9_]+)`?/);
-            if (skillMatch) {
-              allowedSkills.push(skillMatch[1].trim());
-            }
-          }
-        }
-
-        Logger.info(`[Orchestrator] Allowed skills parsed for ${workerName}:`, allowedSkills);
-
-        const workerInstructionsWithContext = `${workerMd}${soulPrompt}${userMemory}${agentRules}`;
-
-        const worker = new WorkerAgent(workerName, workerInstructionsWithContext, allowedSkills);
-        finalResponse = await worker.execute(history.concat({ role: "user", content: userText, media }), chatId);
-      }
+      const worker = new WorkerAgent("nexus", flatInstructions, allowedSkills);
+      finalResponse = await worker.execute(history.concat({ role: "user", content: userText, media }), chatId);
 
       // 5. Commit conversations to history
       await storage.saveMessage(chatId, { role: "user", content: userText });
