@@ -976,6 +976,17 @@ Please update the missing or changed values and save this expense to the databas
         const publicPath = join(process.cwd(), "src", "public", filePath);
         const file = Bun.file(publicPath);
         if (await file.exists()) {
+          // Generated pages under /pages/* get a CSP scoped to their own needs (inline
+          // styles/scripts, Google Fonts, Unsplash/Picsum images) - left off the real
+          // dashboard (index.html/app.js/style.css/api routes) so it stays unaffected.
+          if (filePath.startsWith("/pages/")) {
+            return new Response(file, {
+              headers: {
+                "Content-Security-Policy":
+                  "default-src 'self'; img-src 'self' https://images.unsplash.com https://picsum.photos data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'",
+              },
+            });
+          }
           return new Response(file);
         }
 

@@ -29,6 +29,7 @@ orchestrator.log
 vars.json
 fetch_logs.ts
 .agent/cache/
+src/public/pages/
 assistant.db*
 skillopt_dataset/
 .venv/
