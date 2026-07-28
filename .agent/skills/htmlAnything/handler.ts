@@ -1,5 +1,5 @@
 export async function execute(args: {
-  layoutType: "magazine" | "keynote" | "socialCard" | "dataReport";
+  layoutType: "magazine" | "keynote" | "socialCard" | "dataReport" | "itinerary";
 }) {
   const { layoutType } = args;
 
@@ -34,7 +34,7 @@ export async function execute(args: {
     }
     h1 {
       font-family: 'Playfair Display', serif;
-      font-size: 3.5rem;
+      font-size: clamp(2.2rem, 6vw, 3.5rem);
       font-weight: 900;
       line-height: 1.15;
       margin-bottom: 1.5rem;
@@ -76,28 +76,34 @@ export async function execute(args: {
       border-top: 1px solid #e0dbcd;
       padding-top: 1rem;
     }
+    a:focus-visible, button:focus-visible { outline: 3px solid #1c1a17; outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
     @media (max-width: 650px) {
       .article-grid { grid-template-columns: 1fr; }
-      h1 { font-size: 2.5rem; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>The Dawn of Intelligent Workspaces</h1>
-    <div class="meta">Written by Assistant &bull; July 2026</div>
+    <!-- Replace with the article's actual headline -->
+    <h1>[Article Headline]</h1>
+    <!-- Replace with byline and publish date -->
+    <div class="meta">[Byline &bull; Date]</div>
   </header>
   
-  <p class="lead-paragraph">Lorem ipsum dolor sit amet, consectetur adipiscing elit. Ut pretium pretium tempor. Proin at varius lectus. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Pellentesque habitant morbi tristique senectus.</p>
+  <!-- Replace with a 1-2 sentence lead/dek that hooks the reader -->
+  <p class="lead-paragraph">[Lead paragraph introducing the piece.]</p>
   
   <div class="article-grid">
     <div>
-      <h2>Section One</h2>
-      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Proin gravida nibh vel velit auctor aliquet. Aenean sollicitudin, lorem quis bibendum auctor.</p>
+      <h2>[Section One Heading]</h2>
+      <!-- Replace with real section content -->
+      <p>[Section one body copy.]</p>
     </div>
     <div>
-      <h2>Section Two</h2>
-      <p>Nunc nonummy metus. Vestibulum volutpat pretium libero. Cras id dui. Aenean ut eros et nisl sagittis vestibulum. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos hymenaeos.</p>
+      <h2>[Section Two Heading]</h2>
+      <!-- Replace with real section content -->
+      <p>[Section two body copy.]</p>
     </div>
   </div>
 </body>
@@ -128,12 +134,12 @@ export async function execute(args: {
       height: 100vh;
     }
     .slide {
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
-      padding: 4rem 2rem;
+      padding: 4rem 1.5rem;
       box-sizing: border-box;
       scroll-snap-align: start;
       position: relative;
@@ -141,15 +147,15 @@ export async function execute(args: {
     }
     .slide-number {
       position: absolute;
-      bottom: 2rem;
-      right: 3rem;
+      bottom: 1.5rem;
+      right: 1.5rem;
       font-family: 'Space Grotesk', sans-serif;
-      font-size: 1.1rem;
+      font-size: 1rem;
       color: #444;
     }
     h2 {
       font-family: 'Outfit', sans-serif;
-      font-size: 4.5rem;
+      font-size: clamp(2.2rem, 7vw, 4.5rem);
       font-weight: 900;
       letter-spacing: -2px;
       margin: 0 0 1.5rem 0;
@@ -160,7 +166,7 @@ export async function execute(args: {
     }
     .content {
       max-width: 800px;
-      font-size: 1.6rem;
+      font-size: clamp(1.1rem, 3vw, 1.6rem);
       line-height: 1.6;
       text-align: center;
       color: #999;
@@ -169,18 +175,23 @@ export async function execute(args: {
       color: #00ffcc;
       font-weight: 700;
     }
+    a:focus-visible, button:focus-visible { outline: 3px solid #00ffcc; outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
   <div class="slide">
-    <h2>MINIMALIST DECK</h2>
-    <div class="content">Use snap scroll to navigate between slides. Built for <span class="highlight">extreme clarity</span> and screen projection.</div>
-    <div class="slide-number">01 / 02</div>
+    <!-- Replace with the deck's title slide heading -->
+    <h2>[Deck Title]</h2>
+    <!-- Replace with the title slide's supporting description -->
+    <div class="content">[Slide description, use <span class="highlight">highlight spans</span> for key phrases.]</div>
+    <div class="slide-number">01</div>
   </div>
   <div class="slide">
-    <h2>NEXT GEN INFRA</h2>
-    <div class="content">A fully self-evolving workspace. Instantly compiles code, executes queries, and designs visual interfaces on demand.</div>
-    <div class="slide-number">02 / 02</div>
+    <!-- Duplicate this slide block for additional slides -->
+    <h2>[Slide Title]</h2>
+    <div class="content">[Slide description.]</div>
+    <div class="slide-number">02</div>
   </div>
 </body>
 </html>`,
@@ -190,14 +201,14 @@ export async function execute(args: {
       return {
         success: true,
         layoutType,
-        fonts: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap",
+        fonts: "https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;0,900;1,600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap",
         boilerplate: `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Social Media Card</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;0,900;1,600&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
   <style>
     body {
       margin: 0;
@@ -207,11 +218,13 @@ export async function execute(args: {
       align-items: center;
       min-height: 100vh;
       font-family: 'Plus Jakarta Sans', sans-serif;
+      padding: 1.5rem;
+      box-sizing: border-box;
     }
     .card {
-      width: 420px;
-      height: 560px;
-      padding: 2.5rem;
+      width: min(420px, 92vw);
+      aspect-ratio: 3 / 4;
+      padding: clamp(1.5rem, 5vw, 2.5rem);
       background: linear-gradient(135deg, #ff5722 0%, #ff9800 100%);
       border-radius: 32px;
       box-shadow: 0 30px 60px rgba(255, 87, 34, 0.25);
@@ -244,8 +257,10 @@ export async function execute(args: {
       text-transform: uppercase;
     }
     .quote {
-      font-size: 2.4rem;
-      font-weight: 800;
+      font-family: 'Fraunces', serif;
+      font-size: clamp(1.5rem, 5vw, 2.4rem);
+      font-weight: 600;
+      font-style: italic;
       color: #ffffff;
       line-height: 1.3;
       margin: 0;
@@ -260,17 +275,22 @@ export async function execute(args: {
       font-weight: 600;
     }
     .brand {
-      opacity: 0.7;
+      opacity: 0.85;
     }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="badge">Trending Now</div>
-    <p class="quote">"Design is not just what it looks like and feels like. Design is how it works."</p>
+    <!-- Replace with a short category/context label -->
+    <div class="badge">[Label]</div>
+    <!-- Replace with a 1-2 sentence pull quote relevant to the user's content -->
+    <p class="quote">"[Pull quote goes here.]"</p>
     <div class="footer">
-      <span>Steve Jobs</span>
-      <span class="brand">Nexus AI</span>
+      <!-- Replace with attribution -->
+      <span>[Attribution]</span>
+      <!-- Replace with brand/source name -->
+      <span class="brand">[Brand]</span>
     </div>
   </div>
 </body>
@@ -301,13 +321,15 @@ export async function execute(args: {
     header {
       margin-bottom: 3rem;
       display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.5rem;
       justify-content: space-between;
-      align-items: center;
+      align-items: baseline;
       border-bottom: 1px solid rgba(255,255,255,0.1);
       padding-bottom: 1.5rem;
     }
     h1 {
-      font-size: 2rem;
+      font-size: clamp(1.5rem, 4vw, 2rem);
       font-weight: 700;
       margin: 0;
     }
@@ -317,11 +339,11 @@ export async function execute(args: {
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 2rem;
     }
     .card {
-      background: rgba(255, 255, 255, 0.02);
+      background: rgba(255, 255, 255, 0.04);
       border: 1px solid rgba(255, 255, 255, 0.08);
       padding: 2rem;
       border-radius: 20px;
@@ -332,42 +354,178 @@ export async function execute(args: {
       font-size: 1rem;
       text-transform: uppercase;
       letter-spacing: 1.5px;
-      color: #7b7890;
+      color: #9491a8;
       margin-bottom: 1rem;
       font-weight: 500;
     }
     .metric {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 2.5rem;
+      font-size: clamp(1.8rem, 5vw, 2.5rem);
       font-weight: 700;
-      color: #00ffcc;
+      color: #4ce8c9;
       margin: 0;
     }
     .subtext {
       font-size: 0.95rem;
-      color: #7b7890;
+      color: #9491a8;
       margin-top: 0.8rem;
     }
     .trend-up { color: #39e58c; }
     .trend-down { color: #ff5e62; }
+    a:focus-visible, button:focus-visible { outline: 3px solid #4ce8c9; outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Workspace Metrics</h1>
-    <div class="date">JULY 2026</div>
+    <!-- Replace with the report's title -->
+    <h1>[Report Title]</h1>
+    <!-- Replace with the reporting period -->
+    <div class="date">[REPORTING PERIOD]</div>
   </header>
   
   <div class="grid">
     <div class="card">
-      <div class="card-title">Memory Allocation</div>
-      <p class="metric">4.2 GB</p>
-      <div class="subtext"><span class="trend-down">&darr; 8.4%</span> vs yesterday</div>
+      <!-- Duplicate this card block per metric -->
+      <div class="card-title">[Metric Name]</div>
+      <p class="metric">[Value]</p>
+      <div class="subtext"><span class="trend-up">[&uarr; change]</span> [context]</div>
     </div>
     <div class="card">
-      <div class="card-title">Active Cron Tasks</div>
-      <p class="metric">03</p>
-      <div class="subtext"><span class="trend-up">&uarr; 1</span> live polling task</div>
+      <div class="card-title">[Metric Name]</div>
+      <p class="metric">[Value]</p>
+      <div class="subtext"><span class="trend-down">[&darr; change]</span> [context]</div>
+    </div>
+  </div>
+</body>
+</html>`,
+      };
+
+    case "itinerary":
+      return {
+        success: true,
+        layoutType,
+        fonts: "https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap",
+        boilerplate: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Travel Itinerary</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f0c20 0%, #15102a 50%, #090614 100%);
+      --panel-bg: rgba(255, 255, 255, 0.04);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --accent-primary: #a78bfa;
+    }
+    body {
+      margin: 0;
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-primary);
+      padding: 2rem 1.25rem 4rem;
+    }
+    .trip-header {
+      max-width: 720px;
+      margin: 0 auto 3rem;
+      text-align: center;
+    }
+    .trip-header h1 {
+      font-size: clamp(2rem, 6vw, 3rem);
+      font-weight: 800;
+      margin: 0 0 0.5rem;
+    }
+    .trip-header .dates {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+    }
+    .timeline {
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .day-card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 20px;
+      padding: 1.75rem;
+      backdrop-filter: blur(16px);
+    }
+    .day-card .day-label {
+      display: inline-block;
+      background: var(--accent-primary);
+      color: #14101f;
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 4px 14px;
+      border-radius: 99px;
+      margin-bottom: 0.75rem;
+    }
+    .day-card h2 {
+      margin: 0 0 1rem;
+      font-size: 1.4rem;
+      font-weight: 600;
+    }
+    .activity {
+      display: flex;
+      gap: 1rem;
+      padding: 0.75rem 0;
+      border-top: 1px solid var(--panel-border);
+    }
+    .activity:first-of-type { border-top: none; }
+    .activity .time {
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+      min-width: 4.5rem;
+    }
+    .activity .detail p {
+      margin: 0.25rem 0 0;
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+    a:focus-visible, button:focus-visible { outline: 3px solid var(--accent-primary); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+    @media (max-width: 480px) {
+      .activity { flex-direction: column; gap: 0.25rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="trip-header">
+    <!-- Replace with the trip's destination/title -->
+    <h1>[Trip Title]</h1>
+    <!-- Replace with the trip's date range -->
+    <div class="dates">[Start Date] &ndash; [End Date]</div>
+  </div>
+
+  <div class="timeline">
+    <!-- Duplicate this day-card block for each day of the trip -->
+    <div class="day-card">
+      <span class="day-label">[Day 1]</span>
+      <h2>[Day 1 Location/Theme]</h2>
+      <div class="activity">
+        <div class="time">[9:00 AM]</div>
+        <div class="detail">
+          <strong>[Activity Name]</strong>
+          <p>[Short description or address.]</p>
+        </div>
+      </div>
+      <div class="activity">
+        <div class="time">[1:00 PM]</div>
+        <div class="detail">
+          <strong>[Activity Name]</strong>
+          <p>[Short description or address.]</p>
+        </div>
+      </div>
     </div>
   </div>
 </body>
