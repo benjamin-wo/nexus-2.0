@@ -51,6 +51,10 @@ export class WorkerAgent {
         .map((s) => `### Guidelines & Instructions for using tool '${s.name}':\n${s.instructions}`)
         .join("\n\n");
 
+      if (process.env.DEBUG_SKILL_PROMPT) {
+        console.log(`[WorkerAgent:${this.name}] Injected skill instructions:\n${skillInstructions || "(none)"}`);
+      }
+
       const systemPromptTemplate = `${this.systemPrompt}
 
 ${skillInstructions ? `## Skill Guidelines & Protocols\n${skillInstructions}\n\n` : ""}## System Instructions & Protocols

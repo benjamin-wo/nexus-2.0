@@ -27,9 +27,8 @@ export async function execute(args: {
     const storage = new StorageService();
     await storage.initialize(); // Ensure db is ready
     
-    // Convert parameters to JSON string or leave as object based on how StorageService handles it
-    // Actually insertSkill accepts object/string for parameters.
-    await storage.insertSkill(name, description, JSON.stringify(parameters), codeContent);
+    // insertSkill JSON-stringifies paramSchema internally, so pass the object as-is here.
+    await storage.insertSkill(name, description, parameters, codeContent, instructions);
 
     // 3. Trigger dynamic reload of capabilities
     await SkillRegistry.getInstance().reload();

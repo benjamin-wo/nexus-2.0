@@ -97,6 +97,7 @@ export interface RuntimeSkill {
   description: string;
   paramSchema: any;
   code: string;
+  instructions: string;
   updatedAt?: Date;
 }
 
@@ -139,7 +140,7 @@ export interface IStorage {
   markEmailProcessed(emailId: string, chatId: string): Promise<void>;
   getSkills(): Promise<RuntimeSkill[]>;
   getSkill(name: string): Promise<RuntimeSkill | null>;
-  insertSkill(name: string, description: string, paramSchema: any, code: string): Promise<void>;
+  insertSkill(name: string, description: string, paramSchema: any, code: string, instructions?: string): Promise<void>;
   getThreadAssignment(threadId: number): Promise<string | null>;
   setThreadAssignment(threadId: number, workerName: string): Promise<void>;
   getProfileValue(key: string): Promise<any>;
@@ -299,6 +300,8 @@ export class StorageService implements IStorage {
               code TEXT NOT NULL,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
+
+          ALTER TABLE runtime_skills ADD COLUMN IF NOT EXISTS instructions TEXT NOT NULL DEFAULT '';
 
           CREATE TABLE IF NOT EXISTS thread_assignments (
               thread_id BIGINT PRIMARY KEY,
@@ -473,6 +476,10 @@ export class StorageService implements IStorage {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
+
+      try {
+        this.sqliteDb.run("ALTER TABLE runtime_skills ADD COLUMN instructions TEXT NOT NULL DEFAULT '';");
+      } catch (_) {}
 
       this.sqliteDb.run(`
         CREATE TABLE IF NOT EXISTS thread_assignments (
@@ -1378,6 +1385,7 @@ export class StorageService implements IStorage {
         description: r.description,
         paramSchema: typeof r.param_schema === "string" ? JSON.parse(r.param_schema) : r.param_schema,
         code: r.code,
+        instructions: r.instructions || "",
         updatedAt: new Date(r.updated_at)
       }));
     } else if (this.sqliteDb) {
@@ -1388,6 +1396,7 @@ export class StorageService implements IStorage {
         description: r.description,
         paramSchema: JSON.parse(r.param_schema),
         code: r.code,
+        instructions: r.instructions || "",
         updatedAt: new Date(r.updated_at)
       }));
     }
@@ -1405,6 +1414,7 @@ export class StorageService implements IStorage {
         description: r.description,
         paramSchema: typeof r.param_schema === "string" ? JSON.parse(r.param_schema) : r.param_schema,
         code: r.code,
+        instructions: r.instructions || "",
         updatedAt: new Date(r.updated_at)
       };
     } else if (this.sqliteDb) {
@@ -1416,29 +1426,30 @@ export class StorageService implements IStorage {
         description: r.description,
         paramSchema: JSON.parse(r.param_schema),
         code: r.code,
+        instructions: r.instructions || "",
         updatedAt: new Date(r.updated_at)
       };
     }
     return null;
   }
 
-  async insertSkill(name: string, description: string, paramSchema: any, code: string): Promise<void> {
+  async insertSkill(name: string, description: string, paramSchema: any, code: string, instructions: string = ""): Promise<void> {
     const schemaStr = JSON.stringify(paramSchema);
     if (this.isPostgres && this.pgPool) {
       await this.pgPool.query(
-        `INSERT INTO runtime_skills (name, description, param_schema, code) 
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO runtime_skills (name, description, param_schema, code, instructions) 
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (name) DO UPDATE 
-         SET description = EXCLUDED.description, param_schema = EXCLUDED.param_schema, code = EXCLUDED.code, updated_at = CURRENT_TIMESTAMP`,
-        [name, description, schemaStr, code]
+         SET description = EXCLUDED.description, param_schema = EXCLUDED.param_schema, code = EXCLUDED.code, instructions = EXCLUDED.instructions, updated_at = CURRENT_TIMESTAMP`,
+        [name, description, schemaStr, code, instructions]
       );
     } else if (this.sqliteDb) {
       this.sqliteDb.prepare(
-        `INSERT INTO runtime_skills (name, description, param_schema, code) 
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO runtime_skills (name, description, param_schema, code, instructions) 
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET 
-         description = excluded.description, param_schema = excluded.param_schema, code = excluded.code, updated_at = CURRENT_TIMESTAMP`
-      ).run(name, description, schemaStr, code);
+         description = excluded.description, param_schema = excluded.param_schema, code = excluded.code, instructions = excluded.instructions, updated_at = CURRENT_TIMESTAMP`
+      ).run(name, description, schemaStr, code, instructions);
     }
   }
 
@@ -1581,8 +1592,9 @@ export class StorageService implements IStorage {
         const description = frontmatter.description || "";
         const parameters = frontmatter.parameters || { type: "object", properties: {} };
         const code = fs.readFileSync(tsPath, "utf-8");
+        const instructions = (match[2] || "").trim();
 
-        await this.insertSkill(name, description, parameters, code);
+        await this.insertSkill(name, description, parameters, code, instructions);
         console.log(`[Storage] Seeded skill '${name}' into database.`);
       } catch (err: any) {
         console.error(`[Storage] Failed to seed skill '${skillName}':`, err.message);

@@ -48,6 +48,7 @@ export class SkillRegistry {
         const description = skill.description;
         const parameters = skill.paramSchema;
         const code = skill.code;
+        const instructions = skill.instructions;
 
         // Write to cache file because Bun's import() rejects long data URIs with NameTooLong
         const { writeFileSync, mkdirSync } = await import("fs");
@@ -74,7 +75,7 @@ export class SkillRegistry {
           name,
           description,
           parameters,
-          instructions: "", // Legacy instructions can be injected here if schema supports it
+          instructions: instructions || "",
           handlerPath: `db://${name}`,
           execute: handlerModule.execute,
         });

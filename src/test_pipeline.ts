@@ -46,6 +46,12 @@ async function runTests() {
     }
     console.log("✅ All required core skills are successfully loaded.");
 
+    const frontendDesignSkill = registry.getSkill("frontend-design");
+    if (!frontendDesignSkill || !frontendDesignSkill.instructions || frontendDesignSkill.instructions.length === 0) {
+      throw new Error("'frontend-design' skill loaded with empty instructions - the SKILL.md guidance pipeline is broken.");
+    }
+    console.log(`✅ Skill instructions pipeline verified: 'frontend-design' carries ${frontendDesignSkill.instructions.length} chars of guidance.`);
+
     // 3. Test Skill Handlers directly
     console.log("\n3. Testing Local Skill Execution...");
     
