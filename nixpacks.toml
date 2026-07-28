@@ -2,7 +2,11 @@
 bun = true
 
 [phases.setup]
-nixPkgs = ["bun", "nodejs-20_x"]
+# nspr/nss/atk/cups/dbus/libdrm/mesa/alsa-lib/xorg libs are runtime shared-library
+# dependencies of the headless Chromium binary @sparticuz/chromium downloads for the
+# screenshotPage skill - without these the binary fails to launch with
+# "error while loading shared libraries: libnspr4.so: cannot open shared object file".
+nixPkgs = ["bun", "nodejs-20_x", "nspr", "nss", "atk", "at-spi2-atk", "cups", "dbus", "libdrm", "mesa", "alsa-lib", "expat", "xorg.libxshmfence", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "xorg.libX11", "xorg.libXext", "xorg.libXi", "xorg.libXtst", "xorg.libxkbcommon"]
 
 [phases.install]
 cmds = ["bun install"]

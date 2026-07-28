@@ -13,6 +13,7 @@ To ensure safety, security, and consistent execution, all workers must respect t
   - Built-in Node/Bun modules (`fs`, `path`, `crypto`, `os`, `util`)
   - Packages pre-installed in `package.json` (`yaml`, `grammy`, `pg`)
 - Never attempt to download or execute unverified binary files or shell scripts.
+- This restriction applies specifically to code authored dynamically at runtime via `createSkill`. It does not apply to maintainer-authored, on-disk skills under `.agent/skills/` (e.g. `screenshotPage`), which may depend on any package explicitly added to `package.json` by the maintainer/developer ahead of time.
 
 ## 3. Data Privacy
 - Keep session histories isolated between chat sessions. Never mix conversation logs between different `chat_id` keys in the database.
