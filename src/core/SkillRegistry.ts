@@ -63,6 +63,10 @@ export class SkillRegistry {
     for (const skill of dbSkills) {
       try {
         const name = skill.name;
+        if (this.skills.has(name)) {
+          console.warn(`[SkillRegistry] Skipping DB skill '${name}' because a native hardcoded skill with the same name already exists.`);
+          continue;
+        }
         const description = skill.description;
         const parameters = skill.paramSchema;
         const code = skill.code;
