@@ -12,6 +12,24 @@ export interface Skill {
   execute: (args: any, context?: any) => Promise<any>;
 }
 
+export const DEPRECATED_SKILL_MAPPINGS: { [key: string]: string } = {
+  reminder: "schedule",
+  gmail: "email",
+  outlookEmail: "email",
+  googleMaps: "maps",
+  ltaDataMall: "maps",
+  searchWeb: "webSearch",
+  webScraper: "webSearch",
+  getExpenses: "expenses",
+  logExpense: "expenses",
+  splitBill: "expenses",
+  getResearchNotes: "notes",
+  saveResearchNote: "notes",
+  htmlAnything: "webPage",
+  hostHtmlPage: "webPage",
+  "web-design-guidelines": "webPage"
+};
+
 export class SkillRegistry {
   private static instance: SkillRegistry | null = null;
   private skills = new Map<string, Skill>();
@@ -107,9 +125,15 @@ export class SkillRegistry {
   }
 
   async executeSkill(name: string, args: any, context?: any): Promise<any> {
-    const skill = this.skills.get(name);
+    const resolvedName = DEPRECATED_SKILL_MAPPINGS[name] || name;
+    if (resolvedName !== name) {
+      console.warn(`[SkillRegistry] Mapping deprecated skill call '${name}' to '${resolvedName}'`);
+      context = { ...context, alias: name };
+    }
+
+    const skill = this.skills.get(resolvedName);
     if (!skill) {
-      throw new Error(`Skill '${name}' not found in registry.`);
+      throw new Error(`Skill '${resolvedName}' not found in registry.`);
     }
     return skill.execute(args, context);
   }

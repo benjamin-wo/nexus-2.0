@@ -1,7 +1,7 @@
 import { Message, MediaAttachment } from "../database/Storage";
 import { LlmService } from "./LlmService";
 import { GeminiEmptyResponseError, GeminiApiError } from "./errors";
-import { SkillRegistry } from "./SkillRegistry";
+import { SkillRegistry, DEPRECATED_SKILL_MAPPINGS } from "./SkillRegistry";
 
 export class WorkerAgent {
   private name: string;
@@ -156,7 +156,8 @@ Format requirements:
           // Execute all valid tool calls concurrently in parallel
           const toolResults = await Promise.all(
             parsedCalls.map(async ({ toolName, toolArgs }) => {
-              if (!this.allowedSkills.includes(toolName)) {
+              const resolvedName = DEPRECATED_SKILL_MAPPINGS[toolName] || toolName;
+              if (!this.allowedSkills.includes(resolvedName)) {
                 return {
                   toolName,
                   result: { success: false, error: `Permission denied: Tool '${toolName}' is not allowed for worker '${this.name}'.` },
