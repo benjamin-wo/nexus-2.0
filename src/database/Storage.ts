@@ -791,6 +791,8 @@ export class StorageService implements IStorage {
         ids
       );
     }
+  }
+
   async pruneLogs(olderThanDays = 30): Promise<void> {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
     const cutoffStr = cutoff.toISOString();
