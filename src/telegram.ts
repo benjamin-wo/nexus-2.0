@@ -5,6 +5,7 @@ import { Scheduler } from "./services/Scheduler";
 import { TaskRegistry } from "./core/TaskRegistry";
 import { StorageService } from "./database/Storage";
 import { LlmService } from "./core/LlmService";
+import { setTelegramNotifier } from "./core/NotifyBridge";
 import { join } from "path";
 
 function escapeHtml(text: string): string {
@@ -101,6 +102,12 @@ async function main() {
 
   const bot = new Bot(token);
 
+  // Wire the global notification bridge so pollers/skills can push messages
+  // (including interactive keyboards) to the user without a Bot reference.
+  setTelegramNotifier(async (chatId, text, opts) => {
+    await bot.api.sendMessage(chatId, text, opts);
+  });
+
   // Set command menu in Telegram client
   await bot.api.setMyCommands([
     { command: "start", description: "Initialize the assistant" },
@@ -109,6 +116,7 @@ async function main() {
     { command: "authorize", description: "Connect Gmail account via Google OAuth" },
     { command: "authorize_outlook", description: "Connect Outlook/Hotmail account via Microsoft OAuth" },
     { command: "reminders", description: "List and manage active reminders & cron tasks" },
+    { command: "autolog", description: "Toggle automatic expense logging from emails (/autolog on|off)" },
     { command: "fixingtime", description: "DevOps error log audit & self-healing magic prompt" },
     { command: "cancel", description: "Stop active background tracking sessions" },
   ]).catch(err => console.error("[Telegram] Failed to set commands:", err.message));
@@ -293,6 +301,39 @@ async function main() {
         await ctx.reply(`✅ This thread has been set as the Finance topic for expense polling alerts.`, { message_thread_id: threadId });
       } else {
         await ctx.reply(`⚠️ You must run this inside a topic thread.`);
+      }
+      return;
+    }
+
+    if (text === "/autolog" || text.startsWith("/autolog ")) {
+      const storage = new StorageService();
+      await storage.initialize();
+      const arg = text.replace("/autolog", "").trim().toLowerCase();
+
+      if (arg === "on" || arg === "true" || arg === "yes" || arg === "1") {
+        await storage.setProfileValue("AUTO_LOG_EXPENSES", true);
+        await storage.close();
+        await ctx.reply(`✅ <b>Auto-log enabled.</b>\n\nDetected payment/receipt emails will now be written to your expense database automatically.`, {
+          parse_mode: "HTML",
+          message_thread_id: threadId,
+        });
+      } else if (arg === "off" || arg === "false" || arg === "no" || arg === "0") {
+        await storage.setProfileValue("AUTO_LOG_EXPENSES", false);
+        await storage.close();
+        await ctx.reply(`✅ <b>Auto-log disabled.</b>\n\nDetected payments will ask for your confirmation (Yes / Discard / Edit) before logging.`, {
+          parse_mode: "HTML",
+          message_thread_id: threadId,
+        });
+      } else {
+        const current = await storage.getProfileValue("AUTO_LOG_EXPENSES");
+        await storage.close();
+        const state = current === true || current === "true";
+        await ctx.reply(
+          state
+            ? `🟢 <b>Auto-log is ON.</b>\n\nPayment emails are logged automatically. Use <code>/autolog off</code> to require confirmation.`
+            : `⚪️ <b>Auto-log is OFF.</b>\n\nYou confirm each detected payment before it's logged. Use <code>/autolog on</code> to log automatically.`,
+          { parse_mode: "HTML", message_thread_id: threadId }
+        );
       }
       return;
     }

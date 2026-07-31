@@ -1,5 +1,6 @@
 import { StorageService, GoogleCredentials } from "./database/Storage";
-import { Bot, InlineKeyboard } from "grammy";
+import { NotifyFn } from "./core/NotifyBridge";
+import { isAutoLogEnabled, sendAutoLoggedNotice, sendReceiptPrompt } from "./core/expenseNotify";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -177,15 +178,16 @@ ${content}
   }
 }
 
-async function processUser(chatId: string, credentials: GoogleCredentials, storage: StorageService, bot?: Bot, customQuery?: string) {
+async function processUser(chatId: string, credentials: GoogleCredentials, storage: StorageService, notifier?: NotifyFn, customQuery?: string, days?: number) {
   try {
     const accessToken = await refreshGoogleToken(credentials, chatId, storage);
     const labelId = await getOrCreateLabel(accessToken);
     
     // search for unlabeled expense emails
-    // SGT timezone offset (UTC+8)
-    const yesterday = new Date(Date.now() - 86400000 + (8 * 3600000));
-    const yStr = `${yesterday.getFullYear()}/${(yesterday.getMonth() + 1).toString().padStart(2, '0')}/${yesterday.getDate().toString().padStart(2, '0')}`;
+    // SGT timezone offset (UTC+8); look back `days` (default 1) to support backfills
+    const daysBack = days && days > 0 ? Math.floor(days) : 1;
+    const cutoff = new Date(Date.now() - daysBack * 86400000 + (8 * 3600000));
+    const yStr = `${cutoff.getFullYear()}/${(cutoff.getMonth() + 1).toString().padStart(2, '0')}/${cutoff.getDate().toString().padStart(2, '0')}`;
     
     let queryStr = `is:unread -label:${LABEL_NAME} after:${yStr}`;
     if (customQuery && customQuery.trim().length > 0) {
@@ -218,6 +220,14 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
       const fromHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'from');
       const fromHeader = fromHeaderItem ? fromHeaderItem.value : "Unknown";
 
+      const dateHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'date');
+      const dateHeader = dateHeaderItem ? dateHeaderItem.value : "";
+      let emailDate: string | undefined;
+      if (dateHeader) {
+        const d = new Date(dateHeader);
+        if (!isNaN(d.getTime())) emailDate = d.toISOString();
+      }
+
       console.log(`[EmailPoller] Processing message ${msg.id} ("${subject}")`);
       
       // try to extract full body, fallback to snippet
@@ -231,76 +241,60 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
       const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
       
       if (parsed && parsed.is_receipt) {
+        const autoLog = await isAutoLogEnabled(storage);
+        const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
+        const category = parsed.category || null;
+        const description = parsed.description || null;
+        const paymentMode = parsed.payment_mode || null;
+        const isComplete = amount !== null && description !== null && category !== null;
+
         // Check if this incoming payment matches an active pending reimbursement
         const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
         if (isIncoming && parsed.amount && parsed.description) {
           const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
           if (matched) {
             console.log(`[EmailPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
-            if (bot) {
+            if (notifier) {
               const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
               const opts: any = { parse_mode: "Markdown" };
               if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-              await bot.api.sendMessage(
-                chatId,
-                `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayLah/PayNow for _${matched.description}_!\n\n✅ Debt marked as settled.`,
-                opts
-              );
+              try {
+                await notifier(
+                  chatId,
+                  `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayLah/PayNow for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                  opts
+                );
+              } catch (e) {
+                console.error(`[EmailPoller] Error sending reimbursement message to ${chatId}:`, e);
+              }
             }
             continue;
           }
         }
 
         console.log(`[EmailPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
-        const pendingId = await storage.createPendingExpense({
-          chatId,
-          amount: parsed.amount !== undefined ? Number(parsed.amount) : null,
-          category: parsed.category || null,
-          description: parsed.description || null,
-          paymentMode: parsed.payment_mode || null
-        });
 
-        if (bot) {
-          const amountStr = parsed.amount !== null && parsed.amount !== undefined ? `$${parsed.amount}` : "[Missing]";
-          const descStr = parsed.description || "[Missing]";
-          const catStr = parsed.category || "[Missing]";
-          const payStr = parsed.payment_mode || "[Missing]";
-          
-          let msgText = `📧 **New Receipt Found!**\n\n`;
-          msgText += `• **Amount:** ${amountStr}\n`;
-          msgText += `• **Desc:** ${descStr}\n`;
-          msgText += `• **Category:** ${catStr}\n`;
-          msgText += `• **Payment:** ${payStr}\n\n`;
-          
-          const missing = [];
-          if (!parsed.amount) missing.push("Amount");
-          if (!parsed.description) missing.push("Description");
-          if (!parsed.category) missing.push("Category");
-          if (!parsed.payment_mode) missing.push("Payment Mode");
-
-          let keyboard = new InlineKeyboard();
-          if (missing.length > 0) {
-            msgText += `Please provide the missing details (e.g. ${missing.join(", ")}) so I can log this expense.`;
-            keyboard.text("❌ Discard", `log_no:${pendingId}`)
-                    .text("✏️ Complete details", `log_edit:${pendingId}`);
-          } else {
-            msgText += `Should I log this?`;
-            keyboard.text("✅ Yes, log it", `log_yes:${pendingId}`)
-                    .text("❌ Discard", `log_no:${pendingId}`)
-                    .row()
-                    .text("✏️ Edit details", `log_edit:${pendingId}`);
-          }
-
-          try {
-            const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-            const opts: any = { parse_mode: "Markdown", reply_markup: keyboard };
-            if (financeThreadId) {
-                opts.message_thread_id = Number(financeThreadId);
-            }
-            await bot.api.sendMessage(chatId, msgText, opts);
-          } catch (e) {
-            console.error(`[EmailPoller] Error sending Telegram message to ${chatId}:`, e);
-          }
+        if (autoLog && isComplete) {
+          // Fully automatic mode: write straight to the expenses table.
+          await storage.createExpense({
+            chatId,
+            amount,
+            category: category!,
+            description: description!,
+            createdAt: emailDate,
+          });
+          console.log(`[EmailPoller] Auto-logged expense: $${amount} for ${description}`);
+          await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode });
+        } else {
+          const pendingId = await storage.createPendingExpense({
+            chatId,
+            amount,
+            category,
+            description,
+            paymentMode,
+            createdAt: emailDate,
+          });
+          await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode });
         }
       } else {
         console.log(`[EmailPoller] Not an expense or un-parseable.`);
@@ -331,11 +325,11 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
   }
 }
 
-export async function pollUserGmail(chatId: string, credentials: GoogleCredentials, bot?: Bot, customQuery?: string) {
+export async function pollUserGmail(chatId: string, credentials: GoogleCredentials, notifier?: NotifyFn, customQuery?: string, days?: number) {
   const storage = new StorageService();
   await storage.initialize();
   try {
-    await processUser(chatId, credentials, storage, bot, customQuery);
+    await processUser(chatId, credentials, storage, notifier, customQuery, days);
   } finally {
     await storage.close();
   }

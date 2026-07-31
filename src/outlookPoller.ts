@@ -1,6 +1,7 @@
-import { Bot, InlineKeyboard } from "grammy";
 import { StorageService, MicrosoftCredentials } from "./database/Storage";
 import { extractExpense } from "./emailPoller";
+import { NotifyFn } from "./core/NotifyBridge";
+import { isAutoLogEnabled, sendAutoLoggedNotice, sendReceiptPrompt } from "./core/expenseNotify";
 
 function stripHtmlTags(html: string): string {
   return html.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim();
@@ -49,7 +50,7 @@ async function refreshMicrosoftToken(chatId: string, refreshToken: string, stora
   }
 }
 
-export async function pollUserOutlook(chatId: string, creds: MicrosoftCredentials, bot?: Bot, customQuery?: string) {
+export async function pollUserOutlook(chatId: string, creds: MicrosoftCredentials, notifier?: NotifyFn, customQuery?: string, days?: number) {
   const storage = new StorageService();
   await storage.initialize();
 
@@ -67,8 +68,13 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
       accessToken = refreshed;
     }
 
+    const daysBack = days && days > 0 ? Math.floor(days) : 1;
+    const cutoffDate = new Date(Date.now() - daysBack * 86400000);
+
     // Fetch unread messages from Microsoft Graph API
-    let graphUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=isRead eq false&$top=5&$select=id,subject,from,body,bodyPreview,createdDateTime";
+    // $top scales with the lookback window so backfills actually find messages.
+    const top = Math.min(50, Math.max(5, daysBack * 5));
+    let graphUrl = `https://graph.microsoft.com/v1.0/me/messages?$filter=isRead eq false&$top=${top}&$select=id,subject,from,body,bodyPreview,createdDateTime`;
     if (customQuery && customQuery.trim().length > 0) {
       graphUrl += `&$search="${customQuery.trim()}"`;
     }
@@ -87,7 +93,13 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
     }
 
     const graphData = (await graphRes.json()) as any;
-    const messages = graphData.value || [];
+    let messages = (graphData.value || []) as any[];
+
+    // Respect the lookback window (Graph $search can't be combined with date filters)
+    messages = messages.filter((m: any) => {
+      const d = m.createdDateTime ? new Date(m.createdDateTime) : new Date(0);
+      return d >= cutoffDate;
+    });
 
     if (messages.length === 0) return;
 
@@ -107,23 +119,40 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
       const fromHeader = msg.from?.emailAddress?.address || "Unknown";
       const textBody = stripHtmlTags(msg.body?.content || msg.bodyPreview || "").substring(0, 4000);
 
+      let emailDate: string | undefined;
+      if (msg.createdDateTime) {
+        const d = new Date(msg.createdDateTime);
+        if (!isNaN(d.getTime())) emailDate = d.toISOString();
+      }
+
       const parsed = await extractExpense(textBody, subject, fromHeader);
 
       if (parsed && parsed.is_receipt) {
+        const autoLog = await isAutoLogEnabled(storage);
+        const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
+        const category = parsed.category || null;
+        const description = parsed.description || null;
+        const paymentMode = parsed.payment_mode || null;
+        const isComplete = amount !== null && description !== null && category !== null;
+
         const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
         if (isIncoming && parsed.amount && parsed.description) {
           const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
           if (matched) {
             console.log(`[OutlookPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
-            if (bot) {
+            if (notifier) {
               const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
               const opts: any = { parse_mode: "Markdown" };
               if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-              await bot.api.sendMessage(
-                chatId,
-                `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
-                opts
-              );
+              try {
+                await notifier(
+                  chatId,
+                  `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                  opts
+                );
+              } catch (e) {
+                console.error(`[OutlookPoller] Error sending reimbursement message to ${chatId}:`, e);
+              }
             }
 
             // Mark message as read via Microsoft Graph PATCH API
@@ -140,53 +169,28 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
         }
 
         console.log(`[OutlookPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
-        const pendingId = await storage.createPendingExpense({
-          chatId,
-          amount: parsed.amount !== undefined ? Number(parsed.amount) : null,
-          category: parsed.category || null,
-          description: parsed.description || null,
-          paymentMode: parsed.payment_mode || null,
-        });
 
-        if (bot) {
-          const amountStr = parsed.amount !== null && parsed.amount !== undefined ? `$${parsed.amount}` : "[Missing]";
-          const descStr = parsed.description || "[Missing]";
-          const catStr = parsed.category || "[Missing]";
-          const payStr = parsed.payment_mode || "[Missing]";
-
-          let msgText = `📧 **New Receipt Found (Outlook)!**\n\n`;
-          msgText += `• **Amount:** ${amountStr}\n`;
-          msgText += `• **Desc:** ${descStr}\n`;
-          msgText += `• **Category:** ${catStr}\n`;
-          msgText += `• **Payment:** ${payStr}\n\n`;
-
-          const missing = [];
-          if (!parsed.amount) missing.push("Amount");
-          if (!parsed.description) missing.push("Description");
-          if (!parsed.category) missing.push("Category");
-          if (!parsed.payment_mode) missing.push("Payment Mode");
-
-          let keyboard = new InlineKeyboard();
-          if (missing.length > 0) {
-            msgText += `Please provide the missing details (e.g. ${missing.join(", ")}) so I can log this expense.`;
-            keyboard.text("❌ Discard", `log_no:${pendingId}`).text("✏️ Complete details", `log_edit:${pendingId}`);
-          } else {
-            msgText += `Should I log this?`;
-            keyboard
-              .text("✅ Yes, log it", `log_yes:${pendingId}`)
-              .text("❌ Discard", `log_no:${pendingId}`)
-              .row()
-              .text("✏️ Edit details", `log_edit:${pendingId}`);
-          }
-
-          try {
-            const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-            const opts: any = { parse_mode: "Markdown", reply_markup: keyboard };
-            if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-            await bot.api.sendMessage(chatId, msgText, opts);
-          } catch (e) {
-            console.error(`[OutlookPoller] Error sending Telegram message to ${chatId}:`, e);
-          }
+        if (autoLog && isComplete) {
+          // Fully automatic mode: write straight to the expenses table.
+          await storage.createExpense({
+            chatId,
+            amount,
+            category: category!,
+            description: description!,
+            createdAt: emailDate,
+          });
+          console.log(`[OutlookPoller] Auto-logged expense: $${amount} for ${description}`);
+          await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
+        } else {
+          const pendingId = await storage.createPendingExpense({
+            chatId,
+            amount,
+            category,
+            description,
+            paymentMode,
+            createdAt: emailDate,
+          });
+          await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
         }
       }
 

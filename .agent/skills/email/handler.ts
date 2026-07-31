@@ -2,6 +2,7 @@ import { getAccessToken, getGoogleAuthUrl } from "../../../src/core/googleAuth";
 import { StorageService } from "../../../src/database/Storage";
 import { pollUserOutlook } from "../../../src/outlookPoller";
 import { pollUserGmail } from "../../../src/emailPoller";
+import { notifyUser } from "../../../src/core/NotifyBridge";
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>?/gm, " ").replace(/\s+/g, " ").trim();
@@ -49,6 +50,7 @@ export async function execute(
     to?: string;
     subject?: string;
     body?: string;
+    days?: number;
   },
   context?: { chatId: string; alias?: string }
 ) {
@@ -402,6 +404,7 @@ export async function execute(
 
     case "poll": {
       const pollProvider = provider || "all";
+      const days = args.days;
       const storage = new StorageService();
       await storage.initialize();
 
@@ -411,7 +414,7 @@ export async function execute(
         if (pollProvider === "all" || pollProvider === "outlook") {
           const msCreds = await storage.getMicrosoftCredentials(chatId);
           if (msCreds) {
-            await pollUserOutlook(chatId, msCreds, undefined, query);
+            await pollUserOutlook(chatId, msCreds, notifyUser, query, days);
             results.push(query ? `✅ Outlook polling completed for filter: "${query}".` : "✅ Outlook/Hotmail polling cycle completed.");
           } else {
             results.push("ℹ️ Outlook is not authorized for this account.");
@@ -421,7 +424,7 @@ export async function execute(
         if (pollProvider === "all" || pollProvider === "gmail") {
           const gCreds = await storage.getGoogleCredentials(chatId);
           if (gCreds) {
-            await pollUserGmail(chatId, gCreds, undefined, query);
+            await pollUserGmail(chatId, gCreds, notifyUser, query, days);
             results.push(query ? `✅ Gmail polling completed for filter: "${query}".` : "✅ Gmail polling cycle completed.");
           } else {
             results.push("ℹ️ Gmail is not authorized for this account.");
