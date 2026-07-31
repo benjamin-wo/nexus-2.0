@@ -17,6 +17,24 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Edit a callback-query message safely:
+ *  - always detaches the inline keyboard (so buttons can't be re-tapped after processing)
+ *  - ignores Telegram's "message is not modified" 400 (double-taps / repeated callbacks)
+ */
+async function safeEditMessageText(ctx: any, text: string, opts: any = {}) {
+  try {
+    await ctx.editMessageText(text, {
+      ...opts,
+      reply_markup: opts.reply_markup ?? { inline_keyboard: [] },
+    });
+  } catch (err: any) {
+    const msg = String(err?.message || err?.description || "");
+    const isNotModified = err?.error_code === 400 && msg.includes("message is not modified");
+    if (!isNotModified) throw err;
+  }
+}
+
 function markdownToHtml(markdown: string): string {
   // 1. Escape HTML entities
   let html = escapeHtml(markdown);
@@ -739,7 +757,7 @@ Please update the missing or changed values and save this expense to the databas
           await storage.insertSkill(skillName, description, paramSchema, code);
           const registry = SkillRegistry.getInstance();
           await registry.reload();
-          await ctx.editMessageText(`✅ Patch applied successfully for skill: ${skillName}. Registry reloaded.`, { parse_mode: "HTML" });
+          await safeEditMessageText(ctx, `✅ Patch applied successfully for skill: ${skillName}. Registry reloaded.`, { parse_mode: "HTML" });
           await storage.setProfileValue(`PATCH_PENDING_${skillName}`, null);
        } else {
           await ctx.reply("⚠️ Patch data not found or expired.");
@@ -756,7 +774,7 @@ Please update the missing or changed values and save this expense to the databas
           await Bun.write(skillPath, optimizedPrompt);
           const registry = SkillRegistry.getInstance();
           await registry.reload();
-          await ctx.editMessageText(`🤖 ✅ <b>SkillOpt Prompt Updated:</b> <code>${skillName}</code>. SkillRegistry reloaded.`, { parse_mode: "HTML" });
+          await safeEditMessageText(ctx, `🤖 ✅ <b>SkillOpt Prompt Updated:</b> <code>${skillName}</code>. SkillRegistry reloaded.`, { parse_mode: "HTML" });
           await storage.setProfileValue(`SKILLOPT_PENDING_${skillName}`, null);
        } else {
           await ctx.reply("⚠️ SkillOpt optimization data not found or expired.");
@@ -770,7 +788,7 @@ Please update the missing or changed values and save this expense to the databas
        const settled = await storage.settleReimbursement(id);
        await storage.close();
        if (settled) {
-          await ctx.editMessageText("🎉 <b>Debt marked as settled!</b>", { parse_mode: "HTML" });
+          await safeEditMessageText(ctx, "🎉 <b>Debt marked as settled!</b>", { parse_mode: "HTML" });
        } else {
           await ctx.reply("⚠️ Reimbursement not found or already settled.");
        }
@@ -782,7 +800,7 @@ Please update the missing or changed values and save this expense to the databas
        const deleted = await storage.deleteReminder(reminderId);
        await storage.close();
        if (deleted) {
-          await ctx.editMessageText("✅ <b>Reminder deleted successfully.</b>", { parse_mode: "HTML" });
+          await safeEditMessageText(ctx, "✅ <b>Reminder deleted successfully.</b>", { parse_mode: "HTML" });
        } else {
           await ctx.reply("⚠️ Reminder not found or already deleted.");
        }
@@ -805,13 +823,18 @@ Please update the missing or changed values and save this expense to the databas
             createdAt: pending.createdAt
           });
           await storage.deletePendingExpense(pendingId);
-          await ctx.editMessageText(
-            ctx.callbackQuery.message?.text + `\n\n✅ **Logged to Database!**`,
+          await safeEditMessageText(
+            ctx,
+            (ctx.callbackQuery.message?.text || "Receipt") + `\n\n✅ **Logged to Database!**`,
             { parse_mode: "Markdown" }
           );
         }
       } else {
-        await ctx.editMessageText("⚠️ Pending expense not found. It may have already been logged or discarded.");
+        await safeEditMessageText(
+          ctx,
+          (ctx.callbackQuery.message?.text || "Receipt") + `\n\n⚠️ This receipt was already processed.`,
+          { parse_mode: "Markdown" }
+        );
       }
       await storage.close();
     } else if (data.startsWith("log_no:")) {
@@ -820,11 +843,21 @@ Please update the missing or changed values and save this expense to the databas
       
       const storage = new StorageService();
       await storage.initialize();
-      await storage.deletePendingExpense(pendingId);
-      await ctx.editMessageText(
-        ctx.callbackQuery.message?.text + `\n\n❌ **Discarded!**`,
-        { parse_mode: "Markdown" }
-      );
+      const pending = await storage.getPendingExpense(pendingId);
+      if (pending) {
+        await storage.deletePendingExpense(pendingId);
+        await safeEditMessageText(
+          ctx,
+          (ctx.callbackQuery.message?.text || "Receipt") + `\n\n❌ **Discarded!**`,
+          { parse_mode: "Markdown" }
+        );
+      } else {
+        await safeEditMessageText(
+          ctx,
+          (ctx.callbackQuery.message?.text || "Receipt") + `\n\n⚠️ This receipt was already processed.`,
+          { parse_mode: "Markdown" }
+        );
+      }
       await storage.close();
     } else if (data.startsWith("log_edit:")) {
       const pendingId = parseInt(data.split(":")[1]);
