@@ -6,6 +6,7 @@ import { TaskRegistry } from "./core/TaskRegistry";
 import { StorageService } from "./database/Storage";
 import { LlmService } from "./core/LlmService";
 import { setTelegramNotifier } from "./core/NotifyBridge";
+import { getGoogleAuthUrl } from "./core/googleAuth";
 import { join } from "path";
 
 function escapeHtml(text: string): string {
@@ -335,6 +336,25 @@ async function main() {
           { parse_mode: "HTML", message_thread_id: threadId }
         );
       }
+      return;
+    }
+
+    if (text === "/authorize" || text === "/authorize_gmail" || text === "/gmail_auth" || text === "/connect_gmail") {
+      const clientId = process.env.GOOGLE_CLIENT_ID || "";
+      if (!clientId) {
+        await ctx.reply("⚠️ <code>GOOGLE_CLIENT_ID</code> is not defined in the environment.", { parse_mode: "HTML", message_thread_id: threadId });
+        return;
+      }
+
+      const authUrl = getGoogleAuthUrl(chatId);
+
+      await ctx.reply(`🔗 <b>Authorize Google Access</b>\n\nClick the button below to grant Nexus access to your Gmail and Calendar:`, {
+        parse_mode: "HTML",
+        message_thread_id: threadId,
+        reply_markup: {
+          inline_keyboard: [[{ text: "🔑 Authorize Google Account", url: authUrl }]]
+        }
+      });
       return;
     }
 
