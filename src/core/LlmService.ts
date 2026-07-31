@@ -1,4 +1,5 @@
 import { Message } from "../database/Storage";
+import { StorageService } from "../database/Storage";
 import { GeminiEmptyResponseError, GeminiApiError } from "./errors";
 import { Logger } from "./Logger";
 
@@ -194,6 +195,13 @@ export class LlmService {
           throw new GeminiEmptyResponseError();
         }
 
+        // Record token usage for cost tracking (fire-and-forget).
+        this.persistUsage("gemini", model, {
+          promptTokens: data.usageMetadata?.promptTokenCount ?? 0,
+          completionTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+          totalTokens: data.usageMetadata?.totalTokenCount ?? 0,
+        });
+
         Logger.info(`[LlmService] [req-${reqId}] Gemini API call successful.`);
         return text;
       } catch (err: any) {
@@ -306,6 +314,37 @@ export class LlmService {
       throw new Error("API returned an empty completions response.");
     }
 
+    // Record token usage for cost tracking (fire-and-forget).
+    const provider = url.includes("deepseek.com") ? "deepseek" : url.includes("openrouter.ai") ? "openrouter" : "openai-compatible";
+    this.persistUsage(provider, model, {
+      promptTokens: data.usage?.prompt_tokens ?? 0,
+      completionTokens: data.usage?.completion_tokens ?? 0,
+      totalTokens: data.usage?.total_tokens ?? 0,
+    });
+
     return text;
+  }
+
+  /**
+   * Persist a token-usage record asynchronously. Never blocks the LLM response
+   * path; failures only log a warning.
+   */
+  private persistUsage(
+    provider: string,
+    model: string,
+    usage: { promptTokens: number; completionTokens: number; totalTokens: number }
+  ): void {
+    if (!usage.totalTokens || usage.totalTokens <= 0) return;
+    (async () => {
+      const storage = new StorageService();
+      try {
+        await storage.initialize();
+        await storage.recordLlmUsage({ provider, model, ...usage });
+      } catch (err: any) {
+        Logger.warn(`[LlmService] Failed to record usage for ${provider}: ${err.message}`);
+      } finally {
+        await storage.close();
+      }
+    })();
   }
 }

@@ -101,6 +101,26 @@ export interface RuntimeSkill {
   updatedAt?: Date;
 }
 
+export interface LlmUsageEntry {
+  id?: number;
+  provider: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  createdAt?: Date;
+}
+
+export interface BalanceSnapshot {
+  id?: number;
+  currency: string;
+  totalBalance: number;
+  grantedBalance: number;
+  toppedUpBalance: number;
+  isAvailable: boolean;
+  createdAt?: Date;
+}
+
 export interface IStorage {
   initialize(): Promise<void>;
   saveMessage(chatId: string, message: Message): Promise<void>;
@@ -146,6 +166,11 @@ export interface IStorage {
   setThreadAssignment(threadId: number, workerName: string): Promise<void>;
   getProfileValue(key: string): Promise<any>;
   setProfileValue(key: string, value: any): Promise<void>;
+  recordLlmUsage(usage: LlmUsageEntry): Promise<void>;
+  getLlmUsageSummary(provider?: string, sinceDays?: number): Promise<{ count: number; promptTokens: number; completionTokens: number; totalTokens: number }>;
+  saveBalanceSnapshot(snapshot: BalanceSnapshot): Promise<void>;
+  getBalanceSnapshots(limit?: number): Promise<BalanceSnapshot[]>;
+  getLatestBalanceSnapshot(): Promise<BalanceSnapshot | null>;
   getUserProfile(chatId: string): Promise<string | null>;
   setUserProfile(chatId: string, profileData: string): Promise<void>;
   logEpisodicMemory(sessionId: string, interactionType: string, content: string): Promise<void>;
@@ -331,6 +356,26 @@ export class StorageService implements IStorage {
               content TEXT NOT NULL,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
           );
+
+          CREATE TABLE IF NOT EXISTS llm_usage (
+              id SERIAL PRIMARY KEY,
+              provider VARCHAR(50) NOT NULL,
+              model VARCHAR(100) NOT NULL,
+              prompt_tokens INTEGER NOT NULL DEFAULT 0,
+              completion_tokens INTEGER NOT NULL DEFAULT 0,
+              total_tokens INTEGER NOT NULL DEFAULT 0,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS balance_snapshots (
+              id SERIAL PRIMARY KEY,
+              currency VARCHAR(10) NOT NULL,
+              total_balance NUMERIC(20, 4) NOT NULL,
+              granted_balance NUMERIC(20, 4) NOT NULL DEFAULT 0,
+              topped_up_balance NUMERIC(20, 4) NOT NULL DEFAULT 0,
+              is_available BOOLEAN NOT NULL DEFAULT TRUE,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
         `);
       } finally {
         client.release();
@@ -514,6 +559,30 @@ export class StorageService implements IStorage {
             session_id VARCHAR(255), 
             interaction_type VARCHAR(50),
             content TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider VARCHAR(50) NOT NULL,
+            model VARCHAR(100) NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      this.sqliteDb.run(`
+        CREATE TABLE IF NOT EXISTS balance_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            currency VARCHAR(10) NOT NULL,
+            total_balance REAL NOT NULL,
+            granted_balance REAL NOT NULL DEFAULT 0,
+            topped_up_balance REAL NOT NULL DEFAULT 0,
+            is_available BOOLEAN NOT NULL DEFAULT TRUE,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `);
@@ -1534,6 +1603,113 @@ export class StorageService implements IStorage {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
       ).run(key, valStr);
     }
+  }
+
+  async recordLlmUsage(usage: LlmUsageEntry): Promise<void> {
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        "INSERT INTO llm_usage (provider, model, prompt_tokens, completion_tokens, total_tokens) VALUES ($1, $2, $3, $4, $5)",
+        [usage.provider, usage.model, usage.promptTokens, usage.completionTokens, usage.totalTokens]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb
+        .prepare(
+          "INSERT INTO llm_usage (provider, model, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(usage.provider, usage.model, usage.promptTokens, usage.completionTokens, usage.totalTokens);
+    }
+  }
+
+  async getLlmUsageSummary(provider?: string, sinceDays = 30): Promise<{ count: number; promptTokens: number; completionTokens: number; totalTokens: number }> {
+    const empty = { count: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    if (this.isPostgres && this.pgPool) {
+      const params: any[] = [];
+      let where = "created_at >= NOW() - ($1::int * INTERVAL '1 day')";
+      params.push(sinceDays);
+      if (provider) {
+        where += " AND provider = $2";
+        params.push(provider);
+      }
+      const res = await this.pgPool.query(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(prompt_tokens), 0) AS pt, COALESCE(SUM(completion_tokens), 0) AS ct, COALESCE(SUM(total_tokens), 0) AS tt FROM llm_usage WHERE ${where}`,
+        params
+      );
+      const row = res.rows[0];
+      return {
+        count: Number(row.count),
+        promptTokens: Number(row.pt),
+        completionTokens: Number(row.ct),
+        totalTokens: Number(row.tt),
+      };
+    } else if (this.sqliteDb) {
+      const cutoff = new Date(Date.now() - sinceDays * 86400000).toISOString();
+      const row = this.sqliteDb
+        .prepare(
+          `SELECT COUNT(*) AS count, COALESCE(SUM(prompt_tokens), 0) AS pt, COALESCE(SUM(completion_tokens), 0) AS ct, COALESCE(SUM(total_tokens), 0) AS tt FROM llm_usage WHERE created_at >= ?${provider ? " AND provider = ?" : ""}`
+        )
+        .get(...(provider ? [cutoff, provider] : [cutoff])) as any;
+      return {
+        count: Number(row.count),
+        promptTokens: Number(row.pt),
+        completionTokens: Number(row.ct),
+        totalTokens: Number(row.tt),
+      };
+    }
+    return empty;
+  }
+
+  async saveBalanceSnapshot(snapshot: BalanceSnapshot): Promise<void> {
+    if (this.isPostgres && this.pgPool) {
+      await this.pgPool.query(
+        "INSERT INTO balance_snapshots (currency, total_balance, granted_balance, topped_up_balance, is_available) VALUES ($1, $2, $3, $4, $5)",
+        [snapshot.currency, snapshot.totalBalance, snapshot.grantedBalance, snapshot.toppedUpBalance, snapshot.isAvailable]
+      );
+    } else if (this.sqliteDb) {
+      this.sqliteDb
+        .prepare(
+          "INSERT INTO balance_snapshots (currency, total_balance, granted_balance, topped_up_balance, is_available) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(snapshot.currency, snapshot.totalBalance, snapshot.grantedBalance, snapshot.toppedUpBalance, snapshot.isAvailable ? 1 : 0);
+    }
+  }
+
+  async getBalanceSnapshots(limit = 10): Promise<BalanceSnapshot[]> {
+    if (this.isPostgres && this.pgPool) {
+      const res = await this.pgPool.query(
+        "SELECT id, currency, total_balance, granted_balance, topped_up_balance, is_available, created_at FROM balance_snapshots ORDER BY id DESC LIMIT $1",
+        [limit]
+      );
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        currency: row.currency,
+        totalBalance: Number(row.total_balance),
+        grantedBalance: Number(row.granted_balance),
+        toppedUpBalance: Number(row.topped_up_balance),
+        isAvailable: !!row.is_available,
+        createdAt: new Date(row.created_at),
+      }));
+    } else if (this.sqliteDb) {
+      const rows = this.sqliteDb
+        .prepare(
+          "SELECT id, currency, total_balance, granted_balance, topped_up_balance, is_available, created_at FROM balance_snapshots ORDER BY id DESC LIMIT ?"
+        )
+        .all(limit) as any[];
+      return rows.map((row) => ({
+        id: row.id,
+        currency: row.currency,
+        totalBalance: Number(row.total_balance),
+        grantedBalance: Number(row.granted_balance),
+        toppedUpBalance: Number(row.topped_up_balance),
+        isAvailable: !!row.is_available,
+        createdAt: new Date(row.created_at),
+      }));
+    }
+    return [];
+  }
+
+  async getLatestBalanceSnapshot(): Promise<BalanceSnapshot | null> {
+    const snaps = await this.getBalanceSnapshots(1);
+    return snaps.length > 0 ? snaps[0] : null;
   }
 
   async logEpisodicMemory(sessionId: string, interactionType: string, content: string): Promise<void> {

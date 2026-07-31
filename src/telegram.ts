@@ -7,6 +7,7 @@ import { StorageService } from "./database/Storage";
 import { LlmService } from "./core/LlmService";
 import { setTelegramNotifier } from "./core/NotifyBridge";
 import { getGoogleAuthUrl } from "./core/googleAuth";
+import { checkAndStoreBalance, getUsageSummary } from "./core/deepseekBalance";
 import { join } from "path";
 
 function escapeHtml(text: string): string {
@@ -126,6 +127,7 @@ async function main() {
     { command: "authorize_outlook", description: "Connect Outlook/Hotmail account via Microsoft OAuth" },
     { command: "reminders", description: "List and manage active reminders & cron tasks" },
     { command: "autolog", description: "Toggle automatic expense logging from emails (/autolog on|off)" },
+    { command: "balance", description: "Check DeepSeek API balance & usage" },
     { command: "fixingtime", description: "DevOps error log audit & self-healing magic prompt" },
     { command: "cancel", description: "Stop active background tracking sessions" },
   ]).catch(err => console.error("[Telegram] Failed to set commands:", err.message));
@@ -343,6 +345,62 @@ async function main() {
             : `⚪️ <b>Auto-log is OFF.</b>\n\nYou confirm each detected payment before it's logged. Use <code>/autolog on</code> to log automatically.`,
           { parse_mode: "HTML", message_thread_id: threadId }
         );
+      }
+      return;
+    }
+
+    if (text === "/balance" || text.startsWith("/balance ")) {
+      const args = text.replace("/balance", "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const sub = args[0] || "balance";
+      const num = parseInt(args[1] || "", 10);
+
+      try {
+        if (sub === "usage") {
+          const days = !isNaN(num) && num > 0 ? num : 30;
+          const summary = await getUsageSummary("deepseek", days);
+          await ctx.reply(
+            `📊 <b>DeepSeek Usage (last ${summary.days} days)</b>\n` +
+              `• Calls: <code>${summary.count}</code>\n` +
+              `• Prompt tokens: <code>${summary.promptTokens.toLocaleString()}</code>\n` +
+              `• Completion tokens: <code>${summary.completionTokens.toLocaleString()}</code>\n` +
+              `• Total tokens: <code>${summary.totalTokens.toLocaleString()}</code>\n` +
+              `• Est. cost: <b>USD ${summary.estimatedCostUsd.toFixed(4)}</b>`,
+            { parse_mode: "HTML", message_thread_id: threadId }
+          );
+        } else if (sub === "history") {
+          const storage = new StorageService();
+          await storage.initialize();
+          const snaps = await storage.getBalanceSnapshots(isNaN(num) || num <= 0 ? 10 : Math.min(num, 50));
+          await storage.close();
+          if (snaps.length === 0) {
+            await ctx.reply("No balance snapshots recorded yet. Try <code>/balance</code> first.", { parse_mode: "HTML", message_thread_id: threadId });
+          } else {
+            await ctx.reply(
+              `📈 <b>Recent Balance Snapshots</b>\n` +
+                snaps
+                  .map(
+                    (s) =>
+                      `• <code>${s.currency}</code> <b>${s.totalBalance.toFixed(2)}</b> — ${new Date(s.createdAt!).toISOString()}${s.isAvailable ? "" : " ⚠️ unavailable"}`
+                  )
+                  .join("\n"),
+              { parse_mode: "HTML", message_thread_id: threadId }
+            );
+          }
+        } else {
+          const result = await checkAndStoreBalance();
+          const lines = result.balances.map(
+            (b) => `• <code>${b.currency}</code> <b>${b.totalBalance.toFixed(2)}</b> (granted: ${b.grantedBalance.toFixed(2)}, topped up: ${b.toppedUpBalance.toFixed(2)})`
+          );
+          const availability = result.isAvailable ? "🟢 available" : "🔴 NOT available";
+          await ctx.reply(
+            `💳 <b>DeepSeek Balance</b> (as of ${new Date(result.fetchedAt).toISOString()})\n` +
+              lines.join("\n") +
+              `\n\nStatus: ${availability}\n\n<i>Usage: /balance usage [days] | /balance history</i>`,
+            { parse_mode: "HTML", message_thread_id: threadId }
+          );
+        }
+      } catch (err: any) {
+        await ctx.reply(`❌ Failed to check DeepSeek: ${err.message}`, { message_thread_id: threadId });
       }
       return;
     }
