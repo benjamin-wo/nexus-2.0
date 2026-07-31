@@ -62,8 +62,7 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
       console.log(`[OutlookPoller] Access token expiring for chat ${chatId}, refreshing...`);
       const refreshed = await refreshMicrosoftToken(chatId, creds.refresh_token, storage);
       if (!refreshed) {
-        console.error(`[OutlookPoller] Unable to refresh token for chat ${chatId}.`);
-        return;
+        throw new Error("Unable to refresh Microsoft token (authorization expired). Run /authorize_outlook to reconnect.");
       }
       accessToken = refreshed;
     }
@@ -88,8 +87,7 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
 
     if (!graphRes.ok) {
       const errText = await graphRes.text();
-      console.error(`[OutlookPoller] Microsoft Graph API error for ${chatId}: ${errText}`);
-      return;
+      throw new Error(`Microsoft Graph API error: ${errText}`);
     }
 
     const graphData = (await graphRes.json()) as any;
@@ -108,104 +106,116 @@ export async function pollUserOutlook(chatId: string, creds: MicrosoftCredential
     for (const msg of messages) {
       if (!msg.id) continue;
 
-      const alreadyProcessed = await storage.isEmailProcessed(msg.id);
-      if (alreadyProcessed) {
-        continue;
-      }
+      // Per-message isolation: one bad email must not abort the whole batch.
+      try {
+        const alreadyProcessed = await storage.isEmailProcessed(msg.id);
+        if (alreadyProcessed) {
+          continue;
+        }
 
-      await storage.markEmailProcessed(msg.id, chatId);
+        const subject = msg.subject || "No Subject";
+        const fromHeader = msg.from?.emailAddress?.address || "Unknown";
+        const textBody = stripHtmlTags(msg.body?.content || msg.bodyPreview || "").substring(0, 4000);
 
-      const subject = msg.subject || "No Subject";
-      const fromHeader = msg.from?.emailAddress?.address || "Unknown";
-      const textBody = stripHtmlTags(msg.body?.content || msg.bodyPreview || "").substring(0, 4000);
+        let emailDate: string | undefined;
+        if (msg.createdDateTime) {
+          const d = new Date(msg.createdDateTime);
+          if (!isNaN(d.getTime())) emailDate = d.toISOString();
+        }
 
-      let emailDate: string | undefined;
-      if (msg.createdDateTime) {
-        const d = new Date(msg.createdDateTime);
-        if (!isNaN(d.getTime())) emailDate = d.toISOString();
-      }
+        const parsed = await extractExpense(textBody, subject, fromHeader);
 
-      const parsed = await extractExpense(textBody, subject, fromHeader);
+        if (parsed && parsed.is_receipt) {
+          const autoLog = await isAutoLogEnabled(storage);
+          const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
+          const category = parsed.category || null;
+          const description = parsed.description || null;
+          const paymentMode = parsed.payment_mode || null;
+          const isComplete = amount !== null && description !== null && category !== null;
 
-      if (parsed && parsed.is_receipt) {
-        const autoLog = await isAutoLogEnabled(storage);
-        const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
-        const category = parsed.category || null;
-        const description = parsed.description || null;
-        const paymentMode = parsed.payment_mode || null;
-        const isComplete = amount !== null && description !== null && category !== null;
+          let reimbursementSettled = false;
 
-        const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
-        if (isIncoming && parsed.amount && parsed.description) {
-          const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
-          if (matched) {
-            console.log(`[OutlookPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
-            if (notifier) {
-              const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-              const opts: any = { parse_mode: "Markdown" };
-              if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-              try {
-                await notifier(
-                  chatId,
-                  `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
-                  opts
-                );
-              } catch (e) {
-                console.error(`[OutlookPoller] Error sending reimbursement message to ${chatId}:`, e);
+          const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
+          if (isIncoming && parsed.amount && parsed.description) {
+            const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
+            if (matched) {
+              reimbursementSettled = true;
+              console.log(`[OutlookPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
+              if (notifier) {
+                const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
+                const opts: any = { parse_mode: "Markdown" };
+                if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
+                try {
+                  await notifier(
+                    chatId,
+                    `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via Outlook for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                    opts
+                  );
+                } catch (e) {
+                  console.error(`[OutlookPoller] Error sending reimbursement message to ${chatId}:`, e);
+                }
               }
             }
+          }
 
-            // Mark message as read via Microsoft Graph PATCH API
-            await fetch(`https://graph.microsoft.com/v1.0/me/messages/${msg.id}`, {
-              method: "PATCH",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ isRead: true }),
-            });
-            continue;
+          if (!reimbursementSettled) {
+            console.log(`[OutlookPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
+
+            if (autoLog && isComplete) {
+              // Fully automatic mode: write straight to the expenses table.
+              await storage.createExpense({
+                chatId,
+                amount,
+                category: category!,
+                description: description!,
+                createdAt: emailDate,
+              });
+              console.log(`[OutlookPoller] Auto-logged expense: $${amount} for ${description}`);
+              await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
+            } else {
+              const pendingId = await storage.createPendingExpense({
+                chatId,
+                amount,
+                category,
+                description,
+                paymentMode,
+                createdAt: emailDate,
+              });
+              await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
+            }
           }
         }
 
-        console.log(`[OutlookPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
-
-        if (autoLog && isComplete) {
-          // Fully automatic mode: write straight to the expenses table.
-          await storage.createExpense({
-            chatId,
-            amount,
-            category: category!,
-            description: description!,
-            createdAt: emailDate,
-          });
-          console.log(`[OutlookPoller] Auto-logged expense: $${amount} for ${description}`);
-          await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
-        } else {
-          const pendingId = await storage.createPendingExpense({
-            chatId,
-            amount,
-            category,
-            description,
-            paymentMode,
-            createdAt: emailDate,
-          });
-          await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode }, "Outlook");
-        }
+        // Success: record + mark read so we never reprocess this message.
+        await storage.markEmailProcessed(msg.id, chatId);
+        await fetch(`https://graph.microsoft.com/v1.0/me/messages/${msg.id}`, {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ isRead: true }),
+        });
+      } catch (err: any) {
+        // Leave the message unmarked so a transient failure is retried on the
+        // next poll — without blocking the rest of the batch.
+        console.error(`[OutlookPoller] Failed to process message ${msg.id}:`, err.message);
       }
-
-      // Mark message as read via Microsoft Graph PATCH API
-      await fetch(`https://graph.microsoft.com/v1.0/me/messages/${msg.id}`, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ isRead: true }),
-      });
     }
   } catch (err: any) {
     console.error(`[OutlookPoller] Error polling Microsoft Graph for ${chatId}:`, err.message);
+    // Surface failures to the user instead of silently doing nothing.
+    if (notifier) {
+      try {
+        await notifier(
+          chatId,
+          `⚠️ **Outlook polling failed:** ${err.message}\n\nIf this is an auth error, re-run /authorize_outlook to reconnect your account.`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (notifyErr: any) {
+        console.error(`[OutlookPoller] Failed to notify user about polling error: ${notifyErr.message}`);
+      }
+    }
   } finally {
     await storage.close();
   }

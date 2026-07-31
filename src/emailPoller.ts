@@ -182,23 +182,31 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
   try {
     const accessToken = await refreshGoogleToken(credentials, chatId, storage);
     const labelId = await getOrCreateLabel(accessToken);
-    
-    // search for unlabeled expense emails
-    // SGT timezone offset (UTC+8); look back `days` (default 1) to support backfills
+
+    // Look back `days` (default 1) in Singapore time (UTC+8), regardless of server TZ.
     const daysBack = days && days > 0 ? Math.floor(days) : 1;
-    const cutoff = new Date(Date.now() - daysBack * 86400000 + (8 * 3600000));
-    const yStr = `${cutoff.getFullYear()}/${(cutoff.getMonth() + 1).toString().padStart(2, '0')}/${cutoff.getDate().toString().padStart(2, '0')}`;
-    
-    let queryStr = `is:unread -label:${LABEL_NAME} after:${yStr}`;
+    const cutoff = new Date(Date.now() - daysBack * 86400000);
+    const yStr = cutoff.toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" }); // YYYY-MM-DD
+
+    // Dedup relies on the Logged-Expense label + processed_emails table, NOT on
+    // is:unread — so read-but-unlabeled receipt emails are still caught.
+    let queryStr = `-label:${LABEL_NAME} after:${yStr}`;
     if (customQuery && customQuery.trim().length > 0) {
       queryStr += ` (${customQuery.trim()})`;
     } else {
       queryStr += ` ((from:alerts@citibank.com.sg) OR (from:paylah.alert@dbs.com) OR (from:dbs.com "PayLah") OR (from:dbs.com "PayNow") OR (from:dbs.com "Received") OR (subject:"PayLah") OR (subject:"PayNow") OR (subject:"Received") OR ("DBS PayLah") OR (from:unialerts@uobgroup.com) OR (from:hsbc.bank.singapore.limited@notification.hsbc.com.hk) OR (from:ibanking.alert@dbs.com) OR (from:dbsalert@dbs.com))`;
     }
-    const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=5`, {
+    // Scale the page size with the lookback window so backfills actually catch up.
+    const maxResults = Math.min(50, Math.max(5, daysBack * 5));
+    const searchRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(queryStr)}&maxResults=${maxResults}`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
-    
+
+    if (!searchRes.ok) {
+      const errText = await searchRes.text();
+      throw new Error(`Gmail search failed with status ${searchRes.status}: ${errText}`);
+    }
+
     const searchData = await searchRes.json();
     if (!searchData.messages || searchData.messages.length === 0) {
       return; // No new emails
@@ -207,121 +215,151 @@ async function processUser(chatId: string, credentials: GoogleCredentials, stora
     console.log(`[EmailPoller] Found ${searchData.messages.length} potential expense emails for chat ${chatId}`);
 
     for (const msg of searchData.messages) {
-      // get full message
-      const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      const msgData = await msgRes.json();
-      
-      const headers = msgData.payload.headers;
-      const subjectHeader = headers.find((h: any) => h.name.toLowerCase() === 'subject');
-      const subject = subjectHeader ? subjectHeader.value : "No Subject";
-      
-      const fromHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'from');
-      const fromHeader = fromHeaderItem ? fromHeaderItem.value : "Unknown";
+      // Per-message isolation: one bad email must not abort the whole batch.
+      try {
+        // Idempotency guard (mirrors Outlook): skip messages already recorded
+        // (backstop for label-application failures on previous runs).
+        if (await storage.isEmailProcessed(msg.id)) continue;
 
-      const dateHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'date');
-      const dateHeader = dateHeaderItem ? dateHeaderItem.value : "";
-      let emailDate: string | undefined;
-      if (dateHeader) {
-        const d = new Date(dateHeader);
-        if (!isNaN(d.getTime())) emailDate = d.toISOString();
-      }
+        // get full message
+        const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (!msgRes.ok) {
+          const errText = await msgRes.text();
+          throw new Error(`Gmail fetch failed for ${msg.id}: ${msgRes.status} ${errText}`);
+        }
+        const msgData = await msgRes.json();
 
-      console.log(`[EmailPoller] Processing message ${msg.id} ("${subject}")`);
-      
-      // try to extract full body, fallback to snippet
-      let textBody = getEmailBody(msgData.payload);
-      if (!textBody || textBody.trim().length === 0) {
-        textBody = msgData.snippet || "";
-      } else {
-        textBody = stripHtmlTags(textBody);
-      }
-      
-      const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
-      
-      if (parsed && parsed.is_receipt) {
-        const autoLog = await isAutoLogEnabled(storage);
-        const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
-        const category = parsed.category || null;
-        const description = parsed.description || null;
-        const paymentMode = parsed.payment_mode || null;
-        const isComplete = amount !== null && description !== null && category !== null;
+        const headers = msgData.payload?.headers || [];
+        const subjectHeader = headers.find((h: any) => h.name.toLowerCase() === 'subject');
+        const subject = subjectHeader ? subjectHeader.value : "No Subject";
 
-        // Check if this incoming payment matches an active pending reimbursement
-        const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
-        if (isIncoming && parsed.amount && parsed.description) {
-          const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
-          if (matched) {
-            console.log(`[EmailPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
-            if (notifier) {
-              const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
-              const opts: any = { parse_mode: "Markdown" };
-              if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
-              try {
-                await notifier(
-                  chatId,
-                  `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayLah/PayNow for _${matched.description}_!\n\n✅ Debt marked as settled.`,
-                  opts
-                );
-              } catch (e) {
-                console.error(`[EmailPoller] Error sending reimbursement message to ${chatId}:`, e);
+        const fromHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'from');
+        const fromHeader = fromHeaderItem ? fromHeaderItem.value : "Unknown";
+
+        const dateHeaderItem = headers.find((h: any) => h.name.toLowerCase() === 'date');
+        const dateHeader = dateHeaderItem ? dateHeaderItem.value : "";
+        let emailDate: string | undefined;
+        if (dateHeader) {
+          const d = new Date(dateHeader);
+          if (!isNaN(d.getTime())) emailDate = d.toISOString();
+        }
+
+        console.log(`[EmailPoller] Processing message ${msg.id} ("${subject}")`);
+
+        // try to extract full body, fallback to snippet
+        let textBody = getEmailBody(msgData.payload);
+        if (!textBody || textBody.trim().length === 0) {
+          textBody = msgData.snippet || "";
+        } else {
+          textBody = stripHtmlTags(textBody);
+        }
+
+        const parsed = await extractExpense(textBody.substring(0, 4000), subject, fromHeader); // limit to 4000 chars to save tokens
+
+        if (parsed && parsed.is_receipt) {
+          const autoLog = await isAutoLogEnabled(storage);
+          const amount = parsed.amount !== undefined && parsed.amount !== null ? Number(parsed.amount) : null;
+          const category = parsed.category || null;
+          const description = parsed.description || null;
+          const paymentMode = parsed.payment_mode || null;
+          const isComplete = amount !== null && description !== null && category !== null;
+
+          let reimbursementSettled = false;
+
+          // Check if this incoming payment matches an active pending reimbursement
+          const isIncoming = /received|credited|incoming|paid you|transfer from/i.test(textBody + subject);
+          if (isIncoming && parsed.amount && parsed.description) {
+            const matched = await storage.matchAndSettleReimbursement(chatId, parsed.description, parsed.amount);
+            if (matched) {
+              reimbursementSettled = true;
+              console.log(`[EmailPoller] Auto-settled reimbursement ${matched.id} for ${matched.debtorName} (${matched.amount})`);
+              if (notifier) {
+                const financeThreadId = await storage.getProfileValue("FINANCE_THREAD_ID");
+                const opts: any = { parse_mode: "Markdown" };
+                if (financeThreadId) opts.message_thread_id = Number(financeThreadId);
+                try {
+                  await notifier(
+                    chatId,
+                    `🎉 **Reimbursement Settled!**\n\n**${matched.debtorName}** paid you **SGD ${parsed.amount.toFixed(2)}** via PayLah/PayNow for _${matched.description}_!\n\n✅ Debt marked as settled.`,
+                    opts
+                  );
+                } catch (e) {
+                  console.error(`[EmailPoller] Error sending reimbursement message to ${chatId}:`, e);
+                }
               }
             }
-            continue;
           }
-        }
 
-        console.log(`[EmailPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
+          // Settled reimbursements are NOT expenses — skip logging for them.
+          if (!reimbursementSettled) {
+            console.log(`[EmailPoller] Found receipt: $${parsed.amount} for ${parsed.description}`);
 
-        if (autoLog && isComplete) {
-          // Fully automatic mode: write straight to the expenses table.
-          await storage.createExpense({
-            chatId,
-            amount,
-            category: category!,
-            description: description!,
-            createdAt: emailDate,
-          });
-          console.log(`[EmailPoller] Auto-logged expense: $${amount} for ${description}`);
-          await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode });
+            if (autoLog && isComplete) {
+              // Fully automatic mode: write straight to the expenses table.
+              await storage.createExpense({
+                chatId,
+                amount,
+                category: category!,
+                description: description!,
+                createdAt: emailDate,
+              });
+              console.log(`[EmailPoller] Auto-logged expense: $${amount} for ${description}`);
+              await sendAutoLoggedNotice(notifier, storage, chatId, { amount, description, category, payment_mode: paymentMode });
+            } else {
+              const pendingId = await storage.createPendingExpense({
+                chatId,
+                amount,
+                category,
+                description,
+                paymentMode,
+                createdAt: emailDate,
+              });
+              await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode });
+            }
+          }
         } else {
-          const pendingId = await storage.createPendingExpense({
-            chatId,
-            amount,
-            category,
-            description,
-            paymentMode,
-            createdAt: emailDate,
-          });
-          await sendReceiptPrompt(notifier, storage, chatId, pendingId, { amount, description, category, payment_mode: paymentMode });
+          console.log(`[EmailPoller] Not an expense or un-parseable.`);
         }
-      } else {
-        console.log(`[EmailPoller] Not an expense or un-parseable.`);
-      }
 
-      // Add label so we don't process it again
-      const modifyRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`, {
-        method: "POST",
-        headers: { 
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          addLabelIds: [labelId]
-        })
-      });
-
-      if (!modifyRes.ok) {
-        const errStr = await modifyRes.text();
-        console.error(`[EmailPoller] Failed to apply label to ${msg.id}: ${errStr}`);
-      } else {
-        console.log(`[EmailPoller] Label applied to ${msg.id}`);
+        // Success: record + label so we never reprocess this message.
+        await storage.markEmailProcessed(msg.id, chatId);
+        const modifyRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ addLabelIds: [labelId] })
+        });
+        if (!modifyRes.ok) {
+          const errStr = await modifyRes.text();
+          console.error(`[EmailPoller] Failed to apply label to ${msg.id}: ${errStr}`);
+        } else {
+          console.log(`[EmailPoller] Label applied to ${msg.id}`);
+        }
+      } catch (err: any) {
+        // Leave the message unmarked/unlabeled so a transient failure is
+        // retried on the next poll — without blocking the rest of the batch.
+        console.error(`[EmailPoller] Failed to process message ${msg.id}:`, err.message);
       }
     }
 
-  } catch (err) {
+  } catch (err: any) {
     console.error(`[EmailPoller] Error processing user ${chatId}:`, err);
+    // Surface failures to the user instead of silently doing nothing.
+    if (notifier) {
+      try {
+        await notifier(
+          chatId,
+          `⚠️ **Gmail polling failed:** ${err.message}\n\nIf this is an auth error, re-run /authorize to reconnect your Gmail account.`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (notifyErr: any) {
+        console.error(`[EmailPoller] Failed to notify user about polling error: ${notifyErr.message}`);
+      }
+    }
   }
 }
 
