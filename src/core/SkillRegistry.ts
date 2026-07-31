@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join, resolve } from "path";
 import { readdir, readFile } from "fs/promises";
 import { existsSync } from "fs";
 import YAML from "yaml";
@@ -89,9 +89,16 @@ export class SkillRegistry {
         } catch (_) {}
 
         const tmpFile = join(cacheDir, `${name}_${Date.now()}.js`);
-        
-        // Fix relative paths for the new location (.agent/cache is 2 levels deep, not 3)
-        let fixedCode = code.replace(/(['"])\.\.\/\.\.\/\.\.\/src\//g, "$1../../src/");
+
+        // Resolve relative imports against the skill's source directory so they
+        // survive the move into the flat .agent/cache directory:
+        //  - ../../../src/...  →  <cwd>/src/...  (replaces the old manual rewrite)
+        //  - ./siblingHelper   →  <cwd>/.agent/skills/<name>/siblingHelper
+        // This keeps multi-file skills (e.g. webPage + its helper modules) loadable.
+        const skillSourceDir = join(this.skillsDir, name);
+        let fixedCode = code.replace(/(from\s+['"])(\.\.?\/[^'"]+)(['"])/g, (_m, pre, spec, post) => {
+          return `${pre}${resolve(skillSourceDir, spec)}${post}`;
+        });
         const transpiler = new Bun.Transpiler({ loader: "ts" });
         const transpiled = transpiler.transformSync(fixedCode);
         writeFileSync(tmpFile, transpiled);
