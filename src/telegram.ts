@@ -96,6 +96,14 @@ async function main() {
 
   console.log("[Telegram] Initializing bot...");
 
+  // Env audit: surfaces missing OAuth config in Railway logs immediately.
+  console.log(
+    `[Telegram] Env audit: TELEGRAM_BOT_TOKEN=${process.env.TELEGRAM_BOT_TOKEN ? "set" : "MISSING"}, ` +
+    `GOOGLE_CLIENT_ID=${process.env.GOOGLE_CLIENT_ID ? "set" : "MISSING"}, ` +
+    `GOOGLE_CLIENT_SECRET=${process.env.GOOGLE_CLIENT_SECRET ? "set" : "MISSING"}, ` +
+    `WEBAPP_URL=${process.env.WEBAPP_URL || "MISSING (fallback http://localhost:3000)"}`
+  );
+
   // 1. Initialize Skill Registry
   const registry = SkillRegistry.getInstance();
   await registry.initialize();
@@ -347,14 +355,24 @@ async function main() {
       }
 
       const authUrl = getGoogleAuthUrl(chatId);
+      const redirectUri = new URL(authUrl).searchParams.get("redirect_uri");
+      console.log(`[Telegram] /authorize for chat ${chatId} -> ${authUrl}`);
 
-      await ctx.reply(`🔗 <b>Authorize Google Access</b>\n\nClick the button below to grant Nexus access to your Gmail and Calendar:`, {
-        parse_mode: "HTML",
-        message_thread_id: threadId,
-        reply_markup: {
-          inline_keyboard: [[{ text: "🔑 Authorize Google Account", url: authUrl }]]
+      let warning = "";
+      if (!process.env.GOOGLE_CLIENT_SECRET) {
+        warning = `\n\n⚠️ <code>GOOGLE_CLIENT_SECRET</code> is not set in the environment — the callback will fail to exchange the code.`;
+      }
+
+      await ctx.reply(
+        `🔗 <b>Authorize Google Access</b>\n\nClick the button below to grant Nexus access to your Gmail and Calendar:\n\nRedirect URI used: <code>${redirectUri}</code>${warning}`,
+        {
+          parse_mode: "HTML",
+          message_thread_id: threadId,
+          reply_markup: {
+            inline_keyboard: [[{ text: "🔑 Authorize Google Account", url: authUrl }]]
+          }
         }
-      });
+      );
       return;
     }
 
@@ -874,7 +892,20 @@ Please update the missing or changed values and save this expense to the databas
           return Response.json({ success: true });
         }
 
-        // 7. GET /api/oauth/callback
+        // 7. GET /api/oauth/debug — environment diagnostic (no secrets leaked)
+        if (url.pathname === "/api/oauth/debug" && req.method === "GET") {
+          return Response.json({
+            ok: true,
+            requestHost: url.host,
+            requestProtocol: url.protocol,
+            googClientId: process.env.GOOGLE_CLIENT_ID ? "set" : "MISSING",
+            googClientSecret: process.env.GOOGLE_CLIENT_SECRET ? "set" : "MISSING",
+            webappUrl: process.env.WEBAPP_URL || "MISSING",
+            expectedCallbackPath: "/api/oauth/callback",
+          });
+        }
+
+        // 8. GET /api/oauth/callback
         if (url.pathname === "/api/oauth/callback" && req.method === "GET") {
           const code = url.searchParams.get("code");
           const chatId = url.searchParams.get("state");
@@ -882,8 +913,9 @@ Please update the missing or changed values and save this expense to the databas
             return new Response("Missing code or state", { status: 400 });
           }
 
-          // Exchange code for tokens
-          const webappUrl = process.env.WEBAPP_URL || `http://localhost:${port}`;
+          // Exchange code for tokens. Prefer WEBAPP_URL, but fall back to the
+          // actual request origin so the exchange always matches what Google called.
+          const webappUrl = process.env.WEBAPP_URL || `${url.protocol}//${url.host}`;
           const base = webappUrl.endsWith("/") ? webappUrl.slice(0, -1) : webappUrl;
           const redirectUri = `${base}/api/oauth/callback`;
 
@@ -901,6 +933,7 @@ Please update the missing or changed values and save this expense to the databas
 
           if (!tokenRes.ok) {
             const err = await tokenRes.text();
+            console.error(`[Google OAuth] Token exchange failed for chat ${chatId}: ${err}`);
             return new Response(`Failed to exchange Google OAuth token: ${err}`, { status: 500 });
           }
 
@@ -918,6 +951,7 @@ Please update the missing or changed values and save this expense to the databas
             refresh_token: refresh || "",
             expiry_date: Date.now() + (tokens.expires_in * 1000)
           });
+          console.log(`[Google OAuth] Successfully saved credentials for chat ${chatId} (has refresh: ${!!refresh}).`);
 
           return new Response(`
             <html>
