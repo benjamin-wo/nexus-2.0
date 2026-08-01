@@ -14,10 +14,15 @@ export async function execute(args: { htmlContent: string; viewport?: "desktop" 
   }
 
   const dimensions = VIEWPORTS[viewport] || VIEWPORTS.desktop;
-  const executablePath = await chromium.executablePath();
+  const isMac = process.platform === "darwin";
+  const macChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const executablePath =
+    isMac && require("fs").existsSync(macChromePath)
+      ? macChromePath
+      : await chromium.executablePath();
 
   const browser = await puppeteer.launch({
-    args: chromium.args,
+    args: isMac ? ["--no-sandbox", "--disable-setuid-sandbox"] : chromium.args,
     defaultViewport: dimensions,
     executablePath,
     headless: true,
@@ -25,7 +30,7 @@ export async function execute(args: { htmlContent: string; viewport?: "desktop" 
 
   try {
     const page = await browser.newPage();
-    await page.setContent(htmlContent, { waitUntil: "networkidle0", timeout: 15000 });
+    await page.setContent(htmlContent, { waitUntil: "domcontentloaded", timeout: 15000 });
     const screenshot = await page.screenshot({ type: "png", fullPage: true });
     const base64 = Buffer.from(screenshot).toString("base64");
 

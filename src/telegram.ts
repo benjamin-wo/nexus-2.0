@@ -158,8 +158,9 @@ async function main() {
   // 2. Start Scheduler (Secretary alert callback routes directly to Telegram Chat ID)
   scheduler.start(async (chatId, message) => {
     try {
-      if (message.startsWith("[TASK]")) {
-        const promptText = message.replace("[TASK]", "").trim();
+      const taskMatch = message.match(/(?:⏰ \*\*Recurring Reminder:\*\* |🔔 \*\*Reminder:\*\* )?\[TASK\]\s*(.+)/i);
+      if (taskMatch) {
+        const promptText = taskMatch[1].trim();
         console.log(`[Scheduler] Executing scheduled task for ${chatId}: ${promptText}`);
         const response = await orchestrator.processMessage(chatId, promptText, undefined);
         await sendMessageSafe(bot, chatId, `📋 <b>Scheduled Task Completed:</b>\n\n${response}`);
